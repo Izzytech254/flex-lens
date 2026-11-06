@@ -1,0 +1,6 @@
+{
+  "name": "FixLens Mobile - Visual AI Computer Technician",
+  "description": "Point your smartphone camera at any computer screen error to diagnose, troubleshoot with step-by-step verified instructions, voice assistance, and connected Windows diagnostics.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
