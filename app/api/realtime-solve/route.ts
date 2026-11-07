@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { aiErrorResponseInit, generateContentWithFallback } from '@/lib/gemini';
 import { rateLimit } from '@/lib/rate-limit';
 import { personaForJson } from '@/lib/prompts';
-import { parseModelJson } from '@/lib/api-utils';
+import { parseModelJson, readJsonBody } from '@/lib/api-utils';
 
 // AI calls can take several seconds; allow up to 60s on serverless hosts (e.g. Vercel).
 export const maxDuration = 60;
@@ -25,8 +25,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body = await req.json();
-    const { frameBase64, sessionContext, currentStepNumber, userSpokenInput } = body ?? {};
+    const body = await readJsonBody(req);
+    if (!body) {
+      return NextResponse.json({ error: 'Empty or invalid request.' }, { status: 400 });
+    }
+    const { frameBase64, sessionContext, currentStepNumber, userSpokenInput } = body;
 
     if (typeof frameBase64 !== 'string' || !frameBase64) {
       return NextResponse.json({ error: 'An image of the screen is required.' }, { status: 400 });

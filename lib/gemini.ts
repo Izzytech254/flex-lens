@@ -34,7 +34,8 @@ export function aiErrorResponseInit(error: unknown): { message: string; status: 
     };
   }
   if (status === 429) {
-    return { message: 'The AI service is busy or over its quota. Please try again shortly.', status: 503 };
+    const details = process.env.NODE_ENV !== 'production' ? ` (dev details: ${errorText(error).slice(0, 400)})` : '';
+    return { message: `The AI service is busy or over its quota. Please try again shortly.${details}`, status: 503 };
   }
   if (process.env.NODE_ENV !== 'production') {
     return { message: `AI request failed (dev details): ${errorText(error).slice(0, 400)}`, status: 500 };

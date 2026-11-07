@@ -343,7 +343,10 @@ class SoundFeedbackEngine {
           const data = await res.json().catch(() => ({}));
           this.lastError = `natural voice unavailable (${res.status}${data?.error ? `: ${data.error}` : ''})`;
           console.warn('[FixLens voice]', this.lastError);
-          if (res.status !== 429) this.cloudDownUntil = Date.now() + 60_000; // retry in a minute
+          // Quota/rate limits (our API maps them to 503 or 429): back off for 5 minutes so we don't
+          // keep burning requests; other errors retry after a minute. The browser voice is used meanwhile.
+          const quota = res.status === 429 || res.status === 503 || /quota|busy/i.test(String(data?.error || ''));
+          this.cloudDownUntil = Date.now() + (quota ? 5 * 60_000 : 60_000);
           return null;
         }
         const url = URL.createObjectURL(await res.blob());
@@ -401,7 +404,8 @@ class SoundFeedbackEngine {
     deadline: number,
     options?: { onEnd?: () => void }
   ): Promise<boolean> {
-    const segments = [chunks[0], chunks.slice(1).join(' ... ')].filter(Boolean);
+    // One request per spoken line: TTS quotas are small, so don't split speech into several calls.
+    const segments = [chunks.join(' ... ')];
     const urls = segments.map((s) => this.fetchTtsUrl(s)); // fetch all in parallel
 
     try {

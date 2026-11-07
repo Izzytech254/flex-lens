@@ -29,6 +29,20 @@ export function parseImage(value: unknown): { mimeType: string; data: string } {
   return { mimeType, data: match[2] };
 }
 
+/**
+ * Reads a JSON request body. Returns null for an empty/invalid body — e.g. when the browser
+ * aborted the request mid-upload (the scanner cancels stale scans on purpose).
+ */
+export async function readJsonBody(req: Request): Promise<any | null> {
+  try {
+    const text = await req.text();
+    if (!text) return null;
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 /** Parses model output that should be JSON, tolerating ```json fences. */
 export function parseModelJson(rawText: string | undefined): any {
   const text = rawText?.trim() || '{}';

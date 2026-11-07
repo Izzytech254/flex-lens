@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { aiErrorResponseInit, generateContentWithFallback } from '@/lib/gemini';
 import { rateLimit } from '@/lib/rate-limit';
 import { TECHNICIAN_PERSONA } from '@/lib/prompts';
+import { readJsonBody } from '@/lib/api-utils';
 
 export const maxDuration = 60;
 
@@ -19,7 +20,10 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body = await req.json();
+    const body = await readJsonBody(req);
+    if (!body) {
+      return NextResponse.json({ error: 'Empty or invalid request.' }, { status: 400 });
+    }
     const { question, report, activeStepIndex } = body ?? {};
 
     const q = clip(question, 1000).trim();

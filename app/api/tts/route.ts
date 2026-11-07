@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { aiErrorResponseInit, generateSpeech } from '@/lib/gemini';
 import { rateLimit } from '@/lib/rate-limit';
+import { readJsonBody } from '@/lib/api-utils';
 
 export const maxDuration = 60;
 
@@ -38,7 +39,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body = (await req.json()) ?? {};
+    const body = (await readJsonBody(req)) ?? {};
     const text = typeof body.text === 'string' ? body.text.replace(/\s+/g, ' ').trim().slice(0, MAX_CHARS) : '';
     if (!text) return NextResponse.json({ error: 'Text is required.' }, { status: 400 });
 
