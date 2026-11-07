@@ -29,22 +29,26 @@ export default function WebNavbar({ currentScreen, onNavigate, onOpenVoiceModal,
   return (
     <>
       <header className="sticky top-0 z-40 w-full bg-paper/85 backdrop-blur-md border-b border-hairline">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-8">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-4 sm:gap-8">
           <button
             type="button"
             onClick={() => onNavigate('home')}
-            className="flex items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            className="flex items-center gap-2 rounded-lg shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
             aria-label="FixLens home"
           >
             <span className="w-7 h-7 rounded-lg bg-ink text-accent-400 flex items-center justify-center">
               <ScanLine className="w-3.5 h-3.5" />
             </span>
-            <span className="font-display font-semibold text-[17px] tracking-tight leading-none text-ink">
+            <span className="hidden sm:inline font-display font-semibold text-[17px] tracking-tight leading-none text-ink">
               Fix<span className="text-accent-500">Lens</span>
             </span>
           </button>
 
-          <nav aria-label="Main" className="hidden md:flex items-center gap-6 flex-1 h-full">
+          {/* Main links: shown on all screen sizes (scrolls sideways on very small screens) */}
+          <nav
+            aria-label="Main"
+            className="flex items-center gap-4 sm:gap-6 flex-1 min-w-0 h-full overflow-x-auto scrollbar-none"
+          >
             {navItems.map((item) => {
               const active = isActive(item.id);
               return (
@@ -54,7 +58,7 @@ export default function WebNavbar({ currentScreen, onNavigate, onOpenVoiceModal,
                   onClick={() => onNavigate(item.id)}
                   aria-current={active ? 'page' : undefined}
                   className={cx(
-                    'relative h-full text-sm transition-colors focus-visible:outline-none focus-visible:text-ink',
+                    'relative h-full shrink-0 text-sm transition-colors focus-visible:outline-none focus-visible:text-ink',
                     active ? 'text-ink font-medium' : 'text-ink-soft hover:text-ink'
                   )}
                 >
@@ -71,43 +75,14 @@ export default function WebNavbar({ currentScreen, onNavigate, onOpenVoiceModal,
             })}
           </nav>
 
-          <div className="ml-auto">
-            <Button variant="primary" size="sm" onClick={onOpenVoiceModal}>
+          <div className="ml-auto shrink-0">
+            <Button variant="primary" size="sm" onClick={onOpenVoiceModal} aria-label="Ask FixLens">
               <MessageSquare className="w-4 h-4 text-accent-400" />
-              Ask FixLens
+              <span className="hidden sm:inline">Ask FixLens</span>
             </Button>
           </div>
         </div>
       </header>
-
-      {/* Mobile bottom tab bar */}
-      <nav
-        aria-label="Main"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-paper/95 backdrop-blur-md border-t border-hairline pb-[env(safe-area-inset-bottom)]"
-      >
-        <ul className="flex">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = isActive(item.id);
-            return (
-              <li key={item.id} className="flex-1">
-                <button
-                  type="button"
-                  onClick={() => onNavigate(item.id)}
-                  aria-current={active ? 'page' : undefined}
-                  className={cx(
-                    'w-full pt-2 pb-2.5 flex flex-col items-center gap-1 text-[11px] font-medium transition-colors',
-                    active ? 'text-ink' : 'text-ink-soft/70'
-                  )}
-                >
-                  <Icon className="w-5 h-5" />
-                  {item.label}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
     </>
   );
 }

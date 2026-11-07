@@ -68,16 +68,21 @@ class SoundFeedbackEngine {
     const voices = window.speechSynthesis.getVoices();
     if (!voices || voices.length === 0) return null;
 
-    // Prefer high-quality natural voices
+    // Prefer natural-sounding MALE voices (FixLens's voice is a man's voice on every provider).
     const preferredNames = [
-      'Google US English',
-      'Samantha',
+      'Microsoft Andrew',
+      'Microsoft Guy',
+      'Microsoft Christopher',
+      'Google UK English Male',
       'Daniel',
       'Microsoft David',
       'Microsoft Mark',
-      'Microsoft Zira',
-      'Karen',
       'Alex',
+      'Fred',
+      'Tom',
+      'Aaron',
+      'Rishi',
+      'Male',
       'Natural',
     ];
 
@@ -412,34 +417,45 @@ class SoundFeedbackEngine {
     return p;
   }
 
-  /** Plays one clip; resolves when it ends, errors, or playback is halted. Rejects if play() is blocked. */
-  private playUrl(url: string, mySession: number): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
+  /**
+   * Plays one clip (a blob URL or the streaming /api/tts URL). Resolves true when it finished playing,
+   * false if it failed before any sound played; resolves when halted. Rejects if play() is refused.
+   */
+  private playUrl(url: string, mySession: number): Promise<boolean> {
+    return new Promise<boolean>((resolve, reject) => {
       const el = this.getAudioEl();
-      const finish = () => {
-        if (this.playResolve === finish) this.playResolve = null;
-        resolve();
+      let started = false;
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (this.playResolve === halt) this.playResolve = null;
+        resolve(ok);
       };
-      this.playResolve = finish;
+      const halt = () => finish(true);
+      this.playResolve = halt;
       el.onplay = () => {
+        started = true;
         if (mySession !== this.session) return;
         this.pending = false;
         this.lastError = null;
         if (!this.speakingNow) this.notifySpeakingState(true);
       };
-      el.onended = finish;
-      el.onerror = finish;
+      el.onended = () => finish(true);
+      el.onerror = () => finish(started);
       el.src = url;
       el.play().catch((err) => {
-        if (this.playResolve === finish) this.playResolve = null;
+        if (settled) return;
+        settled = true;
+        if (this.playResolve === halt) this.playResolve = null;
         reject(err);
       });
     });
   }
 
   /**
-   * Speaks with the natural server voice. The first beat is generated separately so speech starts
-   * sooner while the rest loads in parallel. Returns false if the first clip couldn't play (caller falls back).
+   * Speaks with the natural server voice. The first piece is streamed so sound starts immediately;
+   * the rest loads in the background. Returns false if the first piece couldn't play (caller falls back).
    */
   private async speakCloud(
     chunks: string[],
@@ -463,17 +479,21 @@ class SoundFeedbackEngine {
     }
     if (current) segments.push(current);
 
+    // First piece: STREAMED (the <audio> element plays /api/tts?text=… as it arrives), so sound
+    // starts almost immediately. Later pieces are downloaded in the background while it plays.
     const urls: Array<Promise<string | null>> = [];
     const prefetch = (i: number) => {
-      if (i < segments.length && !urls[i]) urls[i] = this.fetchTtsUrl(segments[i]);
+      if (i >= 1 && i < segments.length && !urls[i]) urls[i] = this.fetchTtsUrl(segments[i]);
     };
-    prefetch(0);
+    prefetch(1);
 
     try {
       for (let i = 0; i < segments.length; i++) {
-        prefetch(i);
         prefetch(i + 1); // load the next piece while this one plays
-        const url = await urls[i];
+        const url =
+          i === 0
+            ? this.audioCache.get(segments[0]) || `/api/tts?text=${encodeURIComponent(segments[0])}`
+            : await urls[i];
         if (mySession !== this.session) return true; // superseded — say nothing
         if (!url) {
           if (i === 0) return false; // fall back to the browser voice
@@ -485,8 +505,9 @@ class SoundFeedbackEngine {
           this.flushQueue();
           return true;
         }
-        await this.playUrl(url, mySession);
+        const ok = await this.playUrl(url, mySession);
         if (mySession !== this.session) return true;
+        if (!ok && i === 0) return false; // couldn't play at all → browser voice fallback
       }
       this.pending = false;
       this.notifySpeakingState(false);
@@ -494,6 +515,8 @@ class SoundFeedbackEngine {
       this.flushQueue();
       return true;
     } catch (err: any) {
+      // Replaced by newer speech (play() aborted) — not a failure, say nothing.
+      if (mySession !== this.session || err?.name === 'AbortError') return true;
       // NotAllowedError = autoplay blocked before any user interaction.
       this.lastError = `natural voice failed: ${err?.name || err?.message || err}`;
       console.warn('[FixLens voice]', this.lastError);

@@ -4,7 +4,7 @@ import { rateLimit } from '@/lib/rate-limit';
 import { readJsonBody } from '@/lib/api-utils';
 import { elevenLabsConfigured, elevenLabsSpeech } from '@/lib/tts-elevenlabs';
 import { googleCloudSpeech, googleTtsConfigured } from '@/lib/tts-google';
-import { edgeSpeech, edgeTtsEnabled } from '@/lib/tts-edge';
+import { edgeSpeech, edgeSpeechStream, edgeTtsEnabled } from '@/lib/tts-edge';
 
 export const maxDuration = 60;
 
@@ -12,7 +12,8 @@ export const maxDuration = 60;
 // Provider order: Edge neural voices (free) → Google Cloud TTS (if GOOGLE_TTS_API_KEY) →
 // ElevenLabs (if ELEVENLABS_API_KEY) → Gemini TTS → (client falls back to the browser voice).
 // Change with GEMINI_TTS_VOICE (e.g. Kore, Puck, Charon, Aoede).
-const VOICE = process.env.GEMINI_TTS_VOICE || 'Kore';
+// Default to a male voice, matching the other providers (Edge: Andrew, Google: Charon, ElevenLabs: George).
+const VOICE = process.env.GEMINI_TTS_VOICE || 'Charon';
 const MAX_CHARS = 1500;
 
 function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample = 16): Buffer {
@@ -34,6 +35,49 @@ function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample =
   return Buffer.concat([header, pcm]);
 }
 
+/**
+ * Streaming voice: GET /api/tts?text=...
+ * The browser's <audio> element plays this URL directly, so sound starts as soon as the first audio
+ * chunk is generated (instead of waiting for the whole clip). Used for the first sentence of each
+ * utterance. If the free Edge voice can't start, falls back to the buffered provider chain (POST).
+ */
+export async function GET(req: NextRequest) {
+  const text = (req.nextUrl.searchParams.get('text') || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+  if (!text) return NextResponse.json({ error: 'Text is required.' }, { status: 400 });
+
+  if (edgeTtsEnabled()) {
+    const limited = rateLimit(req, 'tts', 60, 60_000);
+    if (!limited.ok) {
+      return NextResponse.json(
+        { error: 'Too many voice requests.' },
+        { status: 429, headers: { 'Retry-After': String(limited.retryAfterSec) } }
+      );
+    }
+    try {
+      const stream = await edgeSpeechStream(text);
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'audio/mpeg',
+          // Same sentence → served from the browser cache next time (e.g. "Repeat").
+          'Cache-Control': 'private, max-age=3600',
+          'X-TTS-Provider': 'edge-stream',
+        },
+      });
+    } catch (err: any) {
+      console.warn('[tts] Edge streaming failed, falling back to buffered providers:', err?.message || err);
+    }
+  }
+
+  // Fallback: run the buffered provider chain (Google Cloud → ElevenLabs → Gemini), skipping Edge.
+  return POST(
+    new NextRequest(req.url, {
+      method: 'POST',
+      headers: req.headers,
+      body: JSON.stringify({ text, skipEdge: edgeTtsEnabled() }),
+    })
+  );
+}
+
 export async function POST(req: NextRequest) {
   const limited = rateLimit(req, 'tts', 60, 60_000);
   if (!limited.ok) {
@@ -49,8 +93,9 @@ export async function POST(req: NextRequest) {
     const text = typeof body.text === 'string' ? body.text.replace(/\s+/g, ' ').trim().slice(0, MAX_CHARS) : '';
     if (!text) return NextResponse.json({ error: 'Text is required.' }, { status: 400 });
 
-    // 1) Free: Microsoft Edge neural voices (no key, no billing).
-    if (edgeTtsEnabled()) {
+    // 1) Free: Microsoft Edge neural voices (no key, no billing). Skipped when the streaming GET
+    //    already tried Edge and is falling back here.
+    if (edgeTtsEnabled() && !body.skipEdge) {
       try {
         const mp3 = await edgeSpeech(text);
         return new NextResponse(new Uint8Array(mp3), {

@@ -8,7 +8,7 @@ export default function SiteInfo() {
 
   return (
     <div className="w-full bg-paper-deep/60 border-t border-hairline">
-      <div className="max-w-5xl mx-auto px-6 pt-20 pb-28 md:pb-16 text-ink">
+      <div className="max-w-5xl mx-auto px-6 pt-20 pb-16 text-ink">
         <section aria-labelledby="supported-errors" className="grid gap-10 lg:grid-cols-[1fr_1.4fr] lg:gap-16">
           <div>
             <p className="eyebrow text-accent-700">What it knows</p>

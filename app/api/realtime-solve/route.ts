@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { aiErrorResponseInit, generateContentWithFallback } from '@/lib/gemini';
 import { rateLimit } from '@/lib/rate-limit';
-import { personaForJson } from '@/lib/prompts';
+import { personaForJson, SOLUTIONS_INSTRUCTIONS, SOLUTIONS_JSON } from '@/lib/prompts';
 import { parseModelJson, readJsonBody } from '@/lib/api-utils';
 
 // AI calls can take several seconds; allow up to 60s on serverless hosts (e.g. Vercel).
@@ -157,7 +157,7 @@ WHAT TO DO:
 4. realtimeSpokenGuidance: 1-2 short spoken beats following the voice delivery rules. Say what you see and, in friend terms, what it means (simple cause → effect). Do NOT give the fix steps here — the app reads each step's spokenInstruction next.
 5. observedSymptoms: 2-4 things actually visible on screen.
 6. possibleCauses: 2-3 causes based strictly on the evidence, each with a likelihood. Label inferences as inferences.
-7. troubleshootingSteps: 2-4 sequential steps for the detected OS (shown one at a time in the app). Only include a command when genuinely needed and you are certain it exists for that OS. Prefer safe, non-destructive actions. Mark administrator/sudo rights and add a safetyCaution for anything risky (recommend a backup before destructive actions). If the problem looks like hardware failure or malware with data at risk, say so and recommend a professional as the step.
+7. ${SOLUTIONS_INSTRUCTIONS}
 8. boundingBoxHint: percentages of the image framing the error.
 9. citations: only official vendor documentation URLs you are confident exist; otherwise an empty list.
 
@@ -178,19 +178,7 @@ RETURN STRICT JSON:
   "companionActionId": "restart-wlan" | "restart-spooler" | "reset-update-services" | "flush-dns" | "reset-winsock" | "clean-temp" | null,
   "confidence": number between 0.0 and 1.0,
   "boundingBoxHint": { "label": "Error Box", "topPercent": 25, "leftPercent": 20, "widthPercent": 60, "heightPercent": 40 },
-  "troubleshootingSteps": [
-    {
-      "stepNumber": 1,
-      "title": "Short title",
-      "description": "Clear written action instruction (shown on screen)",
-      "spokenInstruction": "The same step as it would be said out loud: short beats, one action per sentence, separated by ' ... ', plain words, jargon explained in the same breath, ending by asking them to tell you what happens. No markdown, no reading out the command character by character.",
-      "command": "Exact command for the detected OS (PowerShell, CMD, Terminal/shell) or null",
-      "actionType": "gui_action" | "powershell_cmd" | "cmd_command" | "terminal_cmd" | "hardware_check" | "reboot_check",
-      "isAdministratorRequired": boolean (admin / sudo needed),
-      "expectedOutcome": "What the user should see after this step",
-      "safetyCaution": "Warning if the step can lose data, otherwise null"
-    }
-  ],
+  ${SOLUTIONS_JSON},
   "citations": [
     { "sourceTitle": "Title", "url": "https://learn.microsoft.com/...", "summary": "Why it is relevant" }
   ]

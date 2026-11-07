@@ -47,6 +47,34 @@ export const TECHNICIAN_PERSONA = `You are FixLens, a real-time technical suppor
 - Avoid technical jargon unless the user has shown technical fluency; if you must use a term, briefly explain it in the same breath ("That's your RAM — the memory your computer uses while it's running stuff").
 - These rules apply to anything spoken aloud. Text that is only shown on screen (like a written step or a command) can be more compact.`;
 
+/** Instructions for offering several alternative solutions (shared by the camera and text routes). */
+export const SOLUTIONS_INSTRUCTIONS = `solutions: 2-3 DIFFERENT ways to fix the problem for the detected OS, most likely to work first,
+each with 2-4 sequential steps (shown one at a time). If the first doesn't work, the user moves to the next, so make them
+genuinely different approaches (e.g. quick reset → reconfigure → reinstall/repair), not the same steps reworded.
+Only include a command when genuinely needed and you are certain it exists for that OS. Prefer safe, non-destructive actions
+first. Mark administrator/sudo rights and add a safetyCaution for anything risky (recommend a backup before destructive
+actions). If it may be hardware failure or malware with data at risk, make the last solution "Get professional help".`;
+
+/** JSON shape of one solution (embedded in the analysis schema). */
+export const SOLUTIONS_JSON = `"solutions": [
+    {
+      "title": "Short name of this approach, e.g. 'Restart the Wi-Fi connection'",
+      "summary": "One spoken sentence on what this approach does and why it helps",
+      "steps": [
+        {
+          "title": "Short title",
+          "description": "Clear written action instruction (shown on screen)",
+          "spokenInstruction": "The same step said out loud: short beats, one action per sentence, separated by ' ... ', plain words, jargon explained in the same breath, ending by asking them to tell you when it's done. No markdown; never read a command character by character.",
+          "command": "Exact command for the detected OS, or null",
+          "actionType": "gui_action" | "powershell_cmd" | "cmd_command" | "terminal_cmd" | "hardware_check" | "reboot_check",
+          "isAdministratorRequired": boolean,
+          "expectedOutcome": "What the user should see after this step",
+          "safetyCaution": "Warning if the step can lose data, otherwise null"
+        }
+      ]
+    }
+  ]`;
+
 /** Persona plus a strict-JSON requirement, for routes that return structured data to the app. */
 export function personaForJson(extra = ''): string {
   return `${TECHNICIAN_PERSONA}

@@ -39,6 +39,109 @@ function escapeForSsml(text: string): string {
     .replace(/'/g, '&apos;');
 }
 
+/**
+ * Streaming version: resolves as soon as the FIRST audio chunk arrives (so playback can start
+ * immediately) with a web ReadableStream of MP3 bytes. Rejects if no audio arrives in time.
+ */
+export async function edgeSpeechStream(rawText: string, firstChunkTimeoutMs = 6000): Promise<ReadableStream<Uint8Array>> {
+  const text = escapeForSsml(rawText);
+  const mod: any = await import('msedge-tts');
+  const MsEdgeTTS = mod.MsEdgeTTS ?? mod.default?.MsEdgeTTS;
+  const OUTPUT_FORMAT = mod.OUTPUT_FORMAT ?? mod.default?.OUTPUT_FORMAT;
+  if (!MsEdgeTTS || !OUTPUT_FORMAT) throw new Error('msedge-tts is not installed correctly.');
+
+  const configured = process.env.EDGE_TTS_VOICE?.trim();
+  const voices = configured ? [configured] : DEFAULT_VOICES;
+
+  let lastError: any = null;
+  for (const voice of voices) {
+    const tts = new MsEdgeTTS();
+    const closeTts = () => {
+      try {
+        tts.close?.();
+      } catch {
+        // ignore
+      }
+    };
+    try {
+      await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+      const result = await tts.toStream(text);
+      const stream = result?.audioStream ?? result;
+      if (!stream || typeof stream.on !== 'function') throw new Error('Edge TTS returned no audio stream.');
+
+      return await new Promise<ReadableStream<Uint8Array>>((resolve, reject) => {
+        let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+        let started = false;
+        let finished = false;
+        const web = new ReadableStream<Uint8Array>({
+          start(c) {
+            controller = c;
+          },
+          cancel() {
+            finished = true;
+            try {
+              stream.destroy?.();
+            } catch {
+              // ignore
+            }
+            closeTts();
+          },
+        });
+        const timer = setTimeout(() => {
+          if (!started) {
+            finished = true;
+            closeTts();
+            reject(new Error('Edge TTS: no audio arrived in time.'));
+          }
+        }, firstChunkTimeoutMs);
+        const end = () => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          closeTts();
+          if (!started) reject(new Error('Edge TTS returned no audio.'));
+          else
+            try {
+              controller?.close();
+            } catch {
+              // ignore
+            }
+        };
+        stream.on('data', (chunk: any) => {
+          if (finished) return;
+          const bytes = new Uint8Array(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          controller?.enqueue(bytes);
+          if (!started) {
+            started = true;
+            clearTimeout(timer);
+            resolve(web);
+          }
+        });
+        stream.on('end', end);
+        stream.on('close', end);
+        stream.on('error', (e: any) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          closeTts();
+          if (!started) reject(e instanceof Error ? e : new Error(String(e)));
+          else
+            try {
+              controller?.error(e);
+            } catch {
+              // ignore
+            }
+        });
+      });
+    } catch (err) {
+      lastError = err;
+      closeTts();
+      console.warn(`[tts-edge] stream with voice ${voice} failed:`, (err as any)?.message || err);
+    }
+  }
+  throw lastError || new Error('Edge TTS failed.');
+}
+
 /** Returns MP3 audio for `text` using a Microsoft Edge neural voice. Throws on failure (caller falls back). */
 export async function edgeSpeech(rawText: string): Promise<Buffer> {
   const text = escapeForSsml(rawText);

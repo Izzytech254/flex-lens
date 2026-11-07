@@ -29,6 +29,7 @@ import {
   ConfidenceRating,
   DiagnosisReport,
   DiagnosticCause,
+  Solution,
   TechnicalCitation,
   TroubleshootingScenario,
   TroubleshootingStep,
@@ -36,6 +37,7 @@ import {
 import { REAL_WORLD_SCENARIOS } from '@/lib/scenarios';
 import { soundManager } from '@/lib/sound-feedback';
 import { useHandsFree, VoiceCommand } from '@/lib/use-hands-free';
+import { diagnoseOffline } from '@/lib/offline-diagnose';
 
 interface ScannerScreenProps {
   onClose: () => void;
@@ -64,9 +66,12 @@ const PRESET_SCENARIO_IDS: Record<'wifi' | 'printer' | 'update', string> = {
 // Live camera pacing: check for screen changes often, but only call the AI when something changed
 // (or after an idle timeout), and never more than once per MIN_SCAN_GAP_MS.
 const TICK_MS = 1500;
-const MIN_SCAN_GAP_MS = 2500;
-const IDLE_RESCAN_DETECT_MS = 15000;
-const IDLE_RESCAN_GUIDE_MS = 10000;
+// Free-tier AI quotas are small (a few requests per minute), so pace live checks conservatively.
+const MIN_SCAN_GAP_MS = 4000;
+const IDLE_RESCAN_DETECT_MS = 20000;
+const IDLE_RESCAN_GUIDE_MS = 15000;
+// After the AI reports it's busy / over quota, pause automatic checks for this long.
+const QUOTA_BACKOFF_MS = 60000;
 const CHANGE_THRESHOLD = 8; // mean per-channel difference on a 32x18 thumbnail
 // Guided-fix pacing: give the user time to hear and do each step before the camera may move on,
 // and require the AI to agree twice in a row (one frame can easily be misjudged).
@@ -121,6 +126,44 @@ function parseBoundingBox(raw: any): BoundingBox | null {
   };
 }
 
+/** Converts a list of steps from the AI (or the offline library) into TroubleshootingSteps. */
+function mapSteps(raw: unknown, os: string): TroubleshootingStep[] {
+  return (Array.isArray(raw) ? raw : [])
+    .map((st: any, idx: number): TroubleshootingStep => {
+      const command = validCommand(st?.command);
+      const type = str(st?.actionType);
+      const description = str(st?.description);
+      return {
+        stepNumber: idx + 1,
+        title: str(st?.title) || `Step ${idx + 1}`,
+        description,
+        simpleExplanation: description,
+        spokenInstruction: str(st?.spokenInstruction) || undefined,
+        actionType: (ACTION_TYPES.has(type) ? type : command ? defaultCommandType(os) : 'gui_action') as TroubleshootingStep['actionType'],
+        command,
+        isAdministratorRequired: Boolean(st?.isAdministratorRequired),
+        expectedOutcome: str(st?.expectedOutcome),
+        verificationCriteria: str(st?.expectedOutcome),
+        safetyCaution: str(st?.safetyCaution) || undefined,
+        status: 'pending',
+      };
+    })
+    .filter((st: TroubleshootingStep) => st.title || st.description);
+}
+
+/** Alternative solutions from the AI/offline answer; falls back to a single solution from plain steps. */
+function mapSolutions(a: any, os: string, fallbackSteps: TroubleshootingStep[]): Solution[] {
+  const sols: Solution[] = (Array.isArray(a?.solutions) ? a.solutions : [])
+    .map((s: any, i: number): Solution => ({
+      title: str(s?.title) || `Solution ${i + 1}`,
+      summary: str(s?.summary),
+      steps: mapSteps(s?.steps, os),
+    }))
+    .filter((s: Solution) => s.steps.length > 0);
+  if (sols.length > 0) return sols;
+  return fallbackSteps.length > 0 ? [{ title: 'Recommended fix', summary: '', steps: fallbackSteps }] : [];
+}
+
 // Converts the model's JSON into a DiagnosisReport using only what the model actually returned.
 function buildReport(a: any, id: string, frame: string): DiagnosisReport {
   const title = str(a.detectedError) || 'Detected error';
@@ -164,29 +207,9 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
     })
     .filter((c: DiagnosticCause) => c.title);
 
-  let steps: TroubleshootingStep[] = (Array.isArray(a.troubleshootingSteps) ? a.troubleshootingSteps : [])
-    .map((st: any, idx: number): TroubleshootingStep => {
-      const command = validCommand(st?.command);
-      const type = str(st?.actionType);
-      const description = str(st?.description);
-      return {
-        stepNumber: idx + 1,
-        title: str(st?.title) || `Step ${idx + 1}`,
-        description,
-        simpleExplanation: description,
-        spokenInstruction: str(st?.spokenInstruction) || undefined,
-        actionType: (ACTION_TYPES.has(type) ? type : command ? defaultCommandType(os) : 'gui_action') as TroubleshootingStep['actionType'],
-        command,
-        isAdministratorRequired: Boolean(st?.isAdministratorRequired),
-        expectedOutcome: str(st?.expectedOutcome),
-        verificationCriteria: str(st?.expectedOutcome),
-        safetyCaution: str(st?.safetyCaution) || undefined,
-        status: 'pending',
-      };
-    })
-    .filter((st: TroubleshootingStep) => st.title || st.description);
+  let steps: TroubleshootingStep[] = mapSteps(a.troubleshootingSteps, os);
 
-  if (steps.length === 0 && str(a.currentActionInstruction)) {
+  if (steps.length === 0 && !Array.isArray(a.solutions) && str(a.currentActionInstruction)) {
     steps = [
       {
         stepNumber: 1,
@@ -218,6 +241,10 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
       };
     });
 
+  // Several alternative solutions (most likely first); the active one's steps are what we guide through.
+  const solutions = mapSolutions(a, os, steps);
+  if (solutions.length > 0) steps = solutions[0].steps;
+
   return {
     id,
     createdAt: new Date().toISOString(),
@@ -226,16 +253,19 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
     affectedComponent: component,
     systemContext: os || 'Unknown OS',
     observedSymptoms: symptoms,
-    confirmedFacts: code ? [`Error code visible on screen: ${code}`] : [],
+    confirmedFacts: code ? [`Error code: ${code}`] : [],
     possibleCauses: causes,
     missingInformation: [],
     recommendedTests: [],
     troubleshootingSteps: steps,
+    solutions,
+    activeSolution: 0,
+    spokenExplanation: str(a.realtimeSpokenGuidance) || undefined,
     citations,
     confidence: toConfidence(score),
     confidenceScore: score,
-    capturedImage: frame,
-    mode: 'camera_visual',
+    capturedImage: frame || undefined,
+    mode: a.mode === 'text_description' ? 'text_description' : 'camera_visual',
   };
 }
 
@@ -281,6 +311,10 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
   const thumbCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const thumbAtLastScanRef = useRef<Uint8ClampedArray | null>(null);
   const lastScanAtRef = useRef(0);
+  const backoffUntilRef = useRef(0); // pause automatic checks until this time (AI busy / quota)
+  // Saver mode: switched on when the free AI quota runs out. No automatic scanning or live progress
+  // checks — the user taps Scan / Next — so the few remaining requests go to what matters.
+  const saverModeRef = useRef(false);
   const isProcessingFrameRef = useRef<boolean>(false);
   const lastSpokenTextRef = useRef<string>('');
   const lastSignatureRef = useRef<string>('');
@@ -323,6 +357,29 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
   const [isProcessingFrame, setIsProcessingFrame] = useState<boolean>(false);
   // True while the full step-by-step plan is being generated after the fast first look.
   const [planning, setPlanning] = useState<boolean>(false);
+  const [saverMode, setSaverModeState] = useState<boolean>(false);
+
+  // Saver mode lasts for the browser session (survives leaving and reopening the scanner).
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem('fixlens_saver_mode') === 'true') {
+        saverModeRef.current = true;
+        setSaverModeState(true);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+  const enableSaverMode = () => {
+    if (saverModeRef.current) return;
+    saverModeRef.current = true;
+    setSaverModeState(true);
+    try {
+      sessionStorage.setItem('fixlens_saver_mode', 'true');
+    } catch {
+      // ignore
+    }
+  };
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [detectedError, setDetectedError] = useState<string | null>(null);
@@ -726,7 +783,56 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
       const isCurrent = () => mountedRef.current && epoch === epochRef.current;
       let announced = false; // FixLens already said "give me a second…" for this scan
 
+      /**
+       * Free offline diagnosis (no AI, no API key): read the screen text in the browser and match it
+       * against the built-in error library, then guide step by step as usual.
+       * skipIntro: FixLens already explained the problem (only the steps are still needed).
+       */
+      const runOffline = async (skipIntro = false) => {
+        setPlanning(true);
+        setErrorMessage(null);
+        const a = await diagnoseOffline(frameBase64);
+        if (!isCurrent()) return;
+        if (a.screenState === 'UNCLEAR') {
+          setErrorMessage("I can't read the screen clearly. Move closer so the error message fills the frame, then tap Scan.");
+          say(a.realtimeSpokenGuidance);
+          return;
+        }
+        if (a.screenState !== 'ERROR_ACTIVE') {
+          if (opts.explicit || opts.frame) {
+            setErrorMessage('No error message found. Point the camera at the error and tap Scan.');
+          }
+          return;
+        }
+        const signature = `${a.detectedError}|${a.errorCode}`.toLowerCase();
+        if (signature !== lastSignatureRef.current) {
+          lastSignatureRef.current = signature;
+          reportIdRef.current = 'fl_' + Date.now().toString(36);
+        }
+        const offlineReport = buildReport(a, reportIdRef.current, frameBase64);
+        setDetectedError(offlineReport.problemSummary);
+        setDetectedCode(offlineReport.detectedErrorCodes[0] || null);
+        setSpokenGuidance(str(a.realtimeSpokenGuidance) || null);
+        setBoundingBox(null);
+        setLatestReport(offlineReport);
+        onAnalyzed(offlineReport, { autoNavigate: false });
+        soundManager.playSoundEffect('detect');
+        startGuide(
+          offlineReport,
+          skipIntro
+            ? "Alright, here's how we fix it."
+            : `Ok, here's what's happening. ... ${str(a.realtimeSpokenGuidance)} ... Let's fix it together.`,
+          skipIntro
+        );
+      };
+
       try {
+        // Saver mode (free AI quota used up / no key): diagnose offline, no AI request at all.
+        if (saverModeRef.current) {
+          if (!guiding) await runOffline();
+          return;
+        }
+
         const step = guiding ? report!.troubleshootingSteps[idx!] : undefined;
         const res = await fetch('/api/realtime-solve', {
           method: 'POST',
@@ -756,6 +862,23 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
 
         const data = await res.json().catch(() => ({}));
         if (!isCurrent()) return; // user moved on (new step, fixed, reset or left) — ignore this result
+        if (res.status === 429 || res.status === 503) {
+          // AI busy or over its quota: pause automatic checks for a minute and say why.
+          backoffUntilRef.current = Date.now() + QUOTA_BACKOFF_MS;
+          console.warn('[FixLens scan] AI unavailable:', data.error);
+          // Out of free quota, or no AI key configured: switch to the free offline diagnosis.
+          const useOffline = /free_tier|quota|not set up|missing/i.test(String(data.error || ''));
+          if (useOffline) {
+            enableSaverMode();
+            setErrorMessage(null);
+            if (!guiding) await runOffline();
+          } else {
+            setErrorMessage(
+              `${data.error || 'The AI service is busy.'} Automatic scanning is paused for a minute — you can still tap Scan.`
+            );
+          }
+          return;
+        }
         if (!res.ok || !data.success) throw new Error(data.error || 'Analysis failed. Please try again.');
 
         if (guiding) {
@@ -830,6 +953,12 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
           });
           const full = await fullRes.json().catch(() => ({}));
           if (!isCurrent()) return;
+          if ((fullRes.status === 429 || fullRes.status === 503) && /free_tier|quota|not set up|missing/i.test(String(full.error || ''))) {
+            // Ran out of AI quota mid-way: build the steps offline instead (the problem is already explained).
+            enableSaverMode();
+            await runOffline(true);
+            return;
+          }
           if (!fullRes.ok || !full.success || !full.analysis) {
             throw new Error(full.error || "I couldn't work out the fix steps. Tap Scan to try again.");
           }
@@ -889,10 +1018,14 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
   // Live camera loop: scan when the screen changes (or after an idle timeout).
   useEffect(() => {
     if (!cameraActive || activeFrameImage) return;
-    const first = setTimeout(() => processRealFrame(), 600);
+    const first = setTimeout(() => {
+      if (!saverModeRef.current) processRealFrame();
+    }, 600);
     const interval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       if (isProcessingFrameRef.current || fixedCandidateRef.current) return;
+      if (Date.now() < backoffUntilRef.current) return; // AI busy / over quota — wait
+      if (saverModeRef.current) return; // free quota used up: only scan when the user taps Scan
       // While guiding, never check the screen while FixLens is talking (or loading its voice):
       // a result arriving mid-sentence would cut the instruction off.
       if (guideIdxRef.current !== null && (speakingRef.current || soundManager.isBusy())) return;
@@ -1287,6 +1420,14 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
 
         {/* Guidance panel */}
         <div className="lg:col-span-5 p-5 sm:p-6 bg-white rounded-xl border border-hairline shadow-[0_1px_2px_rgba(15,23,42,0.04)] space-y-4">
+          {saverMode && (
+            <div role="status" className="p-3 rounded-lg bg-accent-100 border border-accent-300 text-xs text-accent-700 leading-relaxed">
+              <strong className="block text-sm text-ink mb-0.5">Offline mode (free, no AI)</strong>
+              The AI allowance is used up, so FixLens is reading the error text on your screen and matching it against its built-in
+              library of fixes. Point the camera at the error message and tap <strong>Scan</strong>, then use{' '}
+              <strong>Next</strong> to move through the steps.
+            </div>
+          )}
           {errorMessage && (
             <div role="alert" className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800 font-medium flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />

@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { soundManager } from '@/lib/sound-feedback';
 
-export type VoiceCommand = 'next' | 'back' | 'repeat' | 'stop' | 'fixed';
+export type VoiceCommand = 'next' | 'back' | 'repeat' | 'stop' | 'fixed' | 'notworking';
 
 const COMMANDS: Array<{ cmd: VoiceCommand; re: RegExp }> = [
+  // Checked before "fixed" so "it's still not working" isn't read as "working".
+  {
+    cmd: 'notworking',
+    re: /\b(didn'?t work|did not work|(still )?not working|still (broken|there|the same|happening)|try (something|another|a different)( one| way| fix)?|another (fix|way|solution)|different (fix|way|solution))\b/i,
+  },
   { cmd: 'fixed', re: /\b(it'?s fixed|that fixed it|it works( now)?|working now|problem solved|all good now)\b/i },
   { cmd: 'back', re: /^(go )?(back|previous)( step)?\b/i },
   { cmd: 'repeat', re: /\b(repeat|say (that|it) again|come again|one more time)\b|^what\??$/i },

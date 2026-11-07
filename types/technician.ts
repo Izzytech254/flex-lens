@@ -34,6 +34,13 @@ export interface TroubleshootingStep {
   companionActionId?: string;
 }
 
+/** One complete way of fixing the problem. A diagnosis can offer several, most likely first. */
+export interface Solution {
+  title: string;
+  summary: string;
+  steps: TroubleshootingStep[];
+}
+
 export interface DiagnosisReport {
   id: string;
   createdAt: string;
@@ -46,7 +53,13 @@ export interface DiagnosisReport {
   possibleCauses: DiagnosticCause[];
   missingInformation: string[];
   recommendedTests: string[];
+  /** Steps of the solution currently being followed (kept for compatibility with older reports). */
   troubleshootingSteps: TroubleshootingStep[];
+  /** Alternative ways to fix the problem; troubleshootingSteps mirrors solutions[activeSolution]. */
+  solutions?: Solution[];
+  activeSolution?: number;
+  /** Spoken explanation of the problem in plain words */
+  spokenExplanation?: string;
   citations: TechnicalCitation[];
   confidence: ConfidenceRating;
   /** Model-reported confidence between 0 and 1, when available */
@@ -54,7 +67,7 @@ export interface DiagnosisReport {
   /** Set when the user confirms (true) or denies (false) that the fix worked */
   resolved?: boolean;
   capturedImage?: string;
-  mode: 'camera_visual' | 'connected_companion';
+  mode: 'camera_visual' | 'connected_companion' | 'text_description';
 }
 
 export interface VerificationResult {
