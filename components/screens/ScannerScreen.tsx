@@ -9,10 +9,21 @@ import {
   Volume2,
   VolumeX,
   ArrowRight,
+  ArrowLeft,
   Camera,
   Loader2,
   Mic,
+  MicOff,
   AlertTriangle,
+  Terminal,
+  Copy,
+  Check,
+  ShieldAlert,
+  CheckCircle2,
+  Eye,
+  RotateCcw,
+  Send,
+  FileText,
 } from 'lucide-react';
 import {
   ConfidenceRating,
@@ -24,10 +35,14 @@ import {
 } from '@/types/technician';
 import { REAL_WORLD_SCENARIOS } from '@/lib/scenarios';
 import { soundManager } from '@/lib/sound-feedback';
+import { useHandsFree, VoiceCommand } from '@/lib/use-hands-free';
 
 interface ScannerScreenProps {
   onClose: () => void;
+  /** Called when a problem is detected (saved to history). autoNavigate opens the full diagnosis screen. */
   onAnalyzed: (resultReport: DiagnosisReport, options?: { autoNavigate?: boolean }) => void;
+  /** Called when the user confirms the problem is fixed. */
+  onResolved: (report: DiagnosisReport) => void;
   initialPreset?: 'wifi' | 'printer' | 'update' | null;
   initialImage?: string | null;
 }
@@ -46,21 +61,38 @@ const PRESET_SCENARIO_IDS: Record<'wifi' | 'printer' | 'update', string> = {
   update: 'scenario-windows-update',
 };
 
-const LIVE_SCAN_INTERVAL_MS = 8000;
+// Live camera pacing: check for screen changes often, but only call the AI when something changed
+// (or after an idle timeout), and never more than once per MIN_SCAN_GAP_MS.
+const TICK_MS = 1500;
+const MIN_SCAN_GAP_MS = 2500;
+const IDLE_RESCAN_DETECT_MS = 15000;
+const IDLE_RESCAN_GUIDE_MS = 10000;
+const CHANGE_THRESHOLD = 8; // mean per-channel difference on a 32x18 thumbnail
+
 const PROBABILITIES = new Set(['HIGH', 'MEDIUM', 'LOW']);
 const ACTION_TYPES = new Set(['gui_action', 'powershell_cmd', 'cmd_command', 'terminal_cmd', 'hardware_check', 'reboot_check']);
-
-function defaultCommandType(os: string): TroubleshootingStep['actionType'] {
-  return /mac|linux|ubuntu|debian|fedora|arch/i.test(os) ? 'terminal_cmd' : 'powershell_cmd';
-}
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function num(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
 function validCommand(value: unknown): string | undefined {
   const s = str(value);
   return s && !/^(n\/a|null|none)$/i.test(s) ? s : undefined;
+}
+
+function defaultCommandType(os: string): TroubleshootingStep['actionType'] {
+  return /mac|linux|ubuntu|debian|fedora|arch/i.test(os) ? 'terminal_cmd' : 'powershell_cmd';
+}
+
+function commandLabel(step: TroubleshootingStep): string {
+  if (step.actionType === 'cmd_command') return 'Command Prompt';
+  if (step.actionType === 'terminal_cmd') return 'Terminal';
+  return 'PowerShell';
 }
 
 function toConfidence(score: number | undefined): ConfidenceRating {
@@ -74,6 +106,7 @@ function parseBoundingBox(raw: any): BoundingBox | null {
   if (!raw || typeof raw !== 'object') return null;
   const nums = ['topPercent', 'leftPercent', 'widthPercent', 'heightPercent'].map((k) => Number(raw[k]));
   if (nums.some((n) => !Number.isFinite(n))) return null;
+  if (nums[2] <= 0 || nums[3] <= 0) return null;
   const clamp = (n: number) => Math.min(100, Math.max(0, n));
   return {
     topPercent: clamp(nums[0]),
@@ -103,7 +136,8 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
     ? [str(a.observedSymptomSummary)]
     : [];
 
-  const fallbackProbability = (idx: number) => (idx === 0 ? 'HIGH' : idx === 1 ? 'MEDIUM' : 'LOW') as DiagnosticCause['probability'];
+  const fallbackProbability = (idx: number) =>
+    (idx === 0 ? 'HIGH' : idx === 1 ? 'MEDIUM' : 'LOW') as DiagnosticCause['probability'];
   const causes: DiagnosticCause[] = (Array.isArray(a.possibleCauses) ? a.possibleCauses : [])
     .map((c: any, idx: number): DiagnosticCause => {
       if (typeof c === 'string') {
@@ -136,6 +170,7 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
         title: str(st?.title) || `Step ${idx + 1}`,
         description,
         simpleExplanation: description,
+        spokenInstruction: str(st?.spokenInstruction) || undefined,
         actionType: (ACTION_TYPES.has(type) ? type : command ? defaultCommandType(os) : 'gui_action') as TroubleshootingStep['actionType'],
         command,
         isAdministratorRequired: Boolean(st?.isAdministratorRequired),
@@ -200,20 +235,79 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
   };
 }
 
-export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, initialImage }: ScannerScreenProps) {
+/** Turns a written instruction into short spoken beats ("Open X, then click Y" → "Open X. ... Click Y."). */
+function toSpokenBeats(text: string): string {
+  return text
+    .replace(/\s*[,;]?\s*(?:and then|then|after that|next)\s+/gi, '. ... ')
+    .replace(/\s*;\s*/g, '. ... ')
+    .replace(/\.\s*\.\s*\.\s*\.+/g, '. ...')
+    .trim();
+}
+
+/** Voice-style narration of a step: natural connector, one action per beat, then ask them to report back. */
+function stepNarration(report: DiagnosisReport, idx: number): string {
+  const steps = report.troubleshootingSteps;
+  const st = steps[idx];
+  if (!st) return '';
+  const first = idx === 0;
+  const last = idx === steps.length - 1 && steps.length > 1;
+
+  const lead = first ? 'Ok so, first thing.' : last ? 'Alright, last thing.' : 'Alright, next thing.';
+  const body = st.spokenInstruction || toSpokenBeats(st.description || st.title);
+  const beats = [lead, body];
+
+  if (st.command) beats.push(`I've put the command on your screen. ... Just copy it into ${commandLabel(st)}.`);
+  if (st.isAdministratorRequired) {
+    beats.push(
+      st.actionType === 'terminal_cmd'
+        ? "Heads up — that one needs sudo. That's admin access."
+        : "Heads up — you'll need to open it as administrator."
+    );
+  }
+  if (st.safetyCaution) beats.push(`One thing to watch out for. ... ${st.safetyCaution}`);
+  if (!/\?\s*$/.test(body)) beats.push(last ? "Let me know when that's done." : "Tell me when you've done that.");
+
+  return beats.join(' ... ');
+}
+
+export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initialPreset, initialImage }: ScannerScreenProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const thumbCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const thumbAtLastScanRef = useRef<Uint8ClampedArray | null>(null);
+  const lastScanAtRef = useRef(0);
   const isProcessingFrameRef = useRef<boolean>(false);
   const lastSpokenTextRef = useRef<string>('');
   const lastSignatureRef = useRef<string>('');
   const reportIdRef = useRef<string>('');
-  const detectedErrorRef = useRef<string | null>(null);
-  const affectedComponentRef = useRef<string | null>(null);
+  const speakingRef = useRef(false);
+  const isMutedRef = useRef(false);
+
+  // Every scan is tagged with the current "epoch". Moving to another step, confirming the fix,
+  // resetting or leaving the scanner bumps the epoch, so late responses are ignored instead of
+  // being spoken about a screen that has already moved on.
+  const epochRef = useRef(0);
+  const mountedRef = useRef(true);
+  const abortRef = useRef<AbortController | null>(null);
+  const bumpEpoch = () => {
+    epochRef.current++;
+    abortRef.current?.abort();
+    abortRef.current = null;
+  };
+
+  // Guided-fix state (refs mirror state so callbacks stay stable)
+  const reportRef = useRef<DiagnosisReport | null>(null);
+  const guideIdxRef = useRef<number | null>(null);
+  const fixedCandidateRef = useRef(false);
+  const liveTipRef = useRef('');
+  const convoRef = useRef<Array<{ sender: 'user' | 'bot'; text: string }>>([]);
 
   const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [torchOn, setTorchOn] = useState<boolean>(false);
+  const [torchSupported, setTorchSupported] = useState<boolean>(false);
+  const [showExamples, setShowExamples] = useState<boolean>(false);
   const [activeFrameImage, setActiveFrameImage] = useState<string | null>(null);
   const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null);
 
@@ -226,16 +320,53 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
   const [boundingBox, setBoundingBox] = useState<BoundingBox | null>(null);
   const [latestReport, setLatestReport] = useState<DiagnosisReport | null>(null);
 
+  const [guideIdx, setGuideIdxState] = useState<number | null>(null);
+  const [liveTip, setLiveTip] = useState<string | null>(null);
+  const [fixedCandidate, setFixedCandidateState] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [question, setQuestion] = useState('');
+  const [exchange, setExchange] = useState<{ heard: string; reply: string | null } | null>(null);
+
   const [isMuted, setIsMuted] = useState<boolean>(false);
 
-  const speakVoiceFeedback = useCallback(
-    (text: string) => {
-      if (isMuted || !text) return;
-      soundManager.playSoundEffect('detect');
-      soundManager.speak(text);
-    },
-    [isMuted]
-  );
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
+
+  useEffect(() => soundManager.subscribeSpeaking((s) => (speakingRef.current = s)), []);
+
+  // On leaving the scanner: ignore/cancel anything in flight and stop talking.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      epochRef.current++;
+      abortRef.current?.abort();
+      soundManager.stop();
+    };
+  }, []);
+
+  const setGuideIdx = (idx: number | null) => {
+    guideIdxRef.current = idx;
+    setGuideIdxState(idx);
+  };
+  const setFixedCandidate = (v: boolean) => {
+    fixedCandidateRef.current = v;
+    setFixedCandidateState(v);
+  };
+
+  /**
+   * Speak text. interrupt=false is for live tips: skipped if FixLens is already talking, and
+   * dropped if it can't start within a few seconds (so it never talks about an old screen).
+   */
+  const say = useCallback((text: string, interrupt = true) => {
+    if (!mountedRef.current || isMutedRef.current || !text) return;
+    if (!interrupt && (speakingRef.current || soundManager.isBusy())) return;
+    lastSpokenTextRef.current = text;
+    soundManager.speak(text, interrupt ? undefined : { expireMs: 3500 });
+  }, []);
+
+  // ---------------------------------------------------------------- camera
 
   const initPersistentCamera = useCallback(async () => {
     try {
@@ -256,7 +387,15 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
       });
 
       streamRef.current = mediaStream;
+      thumbAtLastScanRef.current = null;
       setCameraActive(true);
+      try {
+        const track = mediaStream.getVideoTracks()[0];
+        const caps: any = track?.getCapabilities ? track.getCapabilities() : {};
+        setTorchSupported(!!caps && 'torch' in caps);
+      } catch {
+        setTorchSupported(false);
+      }
 
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
@@ -292,77 +431,314 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
     }
   };
 
-  const grabVideoFrame = useCallback((): string => {
+  const grabVideoFrame = useCallback((maxWidth: number): string => {
     const video = videoRef.current;
     if (!video || video.videoWidth === 0) return '';
     const canvas = document.createElement('canvas');
-    // Downscale to keep uploads small and fast.
-    const scale = Math.min(1, 1600 / video.videoWidth);
+    const scale = Math.min(1, maxWidth / video.videoWidth);
     canvas.width = Math.round(video.videoWidth * scale);
     canvas.height = Math.round(video.videoHeight * scale);
     const ctx = canvas.getContext('2d');
     if (!ctx) return '';
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.85);
+    return canvas.toDataURL('image/jpeg', maxWidth > 1200 ? 0.85 : 0.75);
   }, []);
+
+  /** Tiny thumbnail of the current video frame, used to detect whether the screen changed. */
+  const captureThumb = useCallback((): Uint8ClampedArray | null => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0) return null;
+    if (!thumbCanvasRef.current) {
+      thumbCanvasRef.current = document.createElement('canvas');
+      thumbCanvasRef.current.width = 32;
+      thumbCanvasRef.current.height = 18;
+    }
+    const ctx = thumbCanvasRef.current.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, 32, 18);
+    return ctx.getImageData(0, 0, 32, 18).data;
+  }, []);
+
+  /** True if the live view differs noticeably from `baseline` (a thumbnail taken earlier). */
+  const screenChangedSince = useCallback(
+    (baseline: Uint8ClampedArray | null, threshold = CHANGE_THRESHOLD): boolean => {
+      const now = captureThumb();
+      if (!now) return false;
+      if (!baseline || baseline.length !== now.length) return true;
+      let diff = 0;
+      for (let i = 0; i < now.length; i += 4) {
+        diff +=
+          Math.abs(now[i] - baseline[i]) + Math.abs(now[i + 1] - baseline[i + 1]) + Math.abs(now[i + 2] - baseline[i + 2]);
+      }
+      return diff / ((now.length / 4) * 3) > threshold;
+    },
+    [captureThumb]
+  );
+
+  const screenChangedSinceLastScan = useCallback(
+    (): boolean => screenChangedSince(thumbAtLastScanRef.current),
+    [screenChangedSince]
+  );
+
+  // ---------------------------------------------------------------- guided fix
+
+  const goToStep = useCallback(
+    (idx: number, prefix = '') => {
+      const report = reportRef.current;
+      if (!report) return;
+      bumpEpoch(); // results about the previous step are now irrelevant
+      setGuideIdx(idx);
+      setCopied(false);
+      liveTipRef.current = '';
+      setLiveTip(null);
+      say(`${prefix}${prefix ? ' ' : ''}${stepNarration(report, idx)}`);
+    },
+    [say]
+  );
+
+  const startGuide = useCallback(
+    (report: DiagnosisReport, intro: string) => {
+      reportRef.current = report;
+      setFixedCandidate(false);
+      convoRef.current = [];
+      setExchange(null);
+      if (report.troubleshootingSteps.length === 0) {
+        setGuideIdx(null);
+        say(intro);
+        return;
+      }
+      soundManager.playSoundEffect('detect');
+      goToStep(0, intro);
+    },
+    [goToStep, say]
+  );
+
+  const advance = useCallback(() => {
+    const report = reportRef.current;
+    const idx = guideIdxRef.current;
+    if (!report || idx === null) return;
+    soundManager.playSoundEffect('step');
+    if (idx < report.troubleshootingSteps.length - 1) {
+      goToStep(idx + 1);
+    } else {
+      bumpEpoch();
+      setFixedCandidate(true);
+      say("Alright, that was the last step. ... So— is it working now?");
+    }
+  }, [goToStep, say]);
+
+  const back = useCallback(() => {
+    const idx = guideIdxRef.current;
+    if (idx !== null && idx > 0) goToStep(idx - 1);
+  }, [goToStep]);
+
+  const repeat = useCallback(() => {
+    const report = reportRef.current;
+    const idx = guideIdxRef.current;
+    if (report && idx !== null) say(stepNarration(report, idx));
+    else if (lastSpokenTextRef.current) say(lastSpokenTextRef.current);
+  }, [say]);
+
+  const confirmFixed = useCallback(() => {
+    const report = reportRef.current;
+    if (!report) return;
+    bumpEpoch();
+    // Just a success chime: we're leaving the scanner, so don't start a sentence that gets cut off.
+    stopPersistentCamera();
+    soundManager.playSoundEffect('success');
+    onResolved({ ...report, resolved: true });
+  }, [say, stopPersistentCamera, onResolved]);
+
+  const notFixedYet = useCallback(() => {
+    bumpEpoch();
+    setFixedCandidate(false);
+    setGuideIdx(null);
+    reportRef.current = null;
+    lastSignatureRef.current = '';
+    thumbAtLastScanRef.current = null;
+    setDetectedError(null);
+    setDetectedCode(null);
+    setLatestReport(null);
+    setLiveTip(null);
+    say("Ok, no worries. ... Point me at the screen again and I'll take another look.");
+  }, [say]);
+
+  const askQuestion = useCallback(
+    async (text: string) => {
+      const q = text.trim();
+      if (!q) return;
+      setExchange({ heard: q, reply: null });
+      try {
+        const report = reportRef.current;
+        const res = await fetch('/api/voice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question: q,
+            report: report ? { ...report, capturedImage: undefined } : null,
+            activeStepIndex: guideIdxRef.current ?? 0,
+            history: convoRef.current.slice(-10),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const reply: string = data.success && data.reply ? data.reply : data.error || 'Sorry, I could not answer that.';
+        convoRef.current = [...convoRef.current, { sender: 'user' as const, text: q }, { sender: 'bot' as const, text: reply }].slice(-10);
+        setExchange({ heard: q, reply });
+        say(reply);
+      } catch {
+        setExchange({ heard: q, reply: "I can't reach the FixLens server right now." });
+      }
+    },
+    [say]
+  );
+
+  const handsFree = useHandsFree({
+    onCommand: (cmd: VoiceCommand) => {
+      if (cmd === 'stop') soundManager.stop();
+      else if (cmd === 'repeat') repeat();
+      else if (cmd === 'back') back();
+      else if (cmd === 'next') {
+        if (fixedCandidateRef.current) return;
+        advance();
+      } else if (cmd === 'fixed' && reportRef.current) confirmFixed();
+    },
+    onQuestion: (t) => askQuestion(t),
+  });
+
+  // ---------------------------------------------------------------- analysis
+
+  /** stale=true when the screen has changed since the frame was captured: progress still counts, tips don't. */
+  const handleProgress = useCallback(
+    (p: any, stale: boolean) => {
+      const progress = str(p?.stepProgress).toUpperCase();
+      const conf = num(p?.confidence, 0.5);
+      if (!stale) setBoundingBox(parseBoundingBox(p?.boundingBoxHint));
+
+      if (progress === 'RESOLVED' && conf >= 0.6) {
+        if (!fixedCandidateRef.current) {
+          bumpEpoch();
+          setFixedCandidate(true);
+          soundManager.playSoundEffect('success');
+          say("Oh nice — looks like that error's gone. ... Is everything working now?");
+        }
+        return;
+      }
+      if (progress === 'STEP_DONE' && conf >= 0.7) {
+        const report = reportRef.current;
+        const idx = guideIdxRef.current;
+        if (report && idx !== null) {
+          if (idx < report.troubleshootingSteps.length - 1) {
+            soundManager.playSoundEffect('step');
+            goToStep(idx + 1, 'Nice, that looks done.');
+          } else if (!fixedCandidateRef.current) {
+            advance();
+          }
+        }
+        return;
+      }
+      // Anything below describes what's on screen *right now* — skip it if the screen has moved on.
+      if (stale) return;
+
+      if (progress === 'NEW_ERROR' && str(p?.newErrorText)) {
+        const text = `A different error popped up: ${str(p.newErrorText)}`;
+        liveTipRef.current = text;
+        setLiveTip(text);
+        say(
+          `Hmm, hang on— a different error just popped up. ... It says: ${str(p.newErrorText)}. ... Tap scan if you want me to look at that one instead.`
+        );
+        return;
+      }
+      const tip = str(p?.liveGuidance);
+      if (tip && tip !== liveTipRef.current) {
+        liveTipRef.current = tip;
+        setLiveTip(tip);
+        say(tip, false);
+      }
+    },
+    [say, goToStep, advance]
+  );
 
   /**
    * Analyse a frame.
    * - frame: explicit image (upload/scenario); otherwise the current still image or live video frame.
-   * - explicit: user asked for this scan → always report the result and show "no error" feedback.
-   * - navigate: open the diagnosis screen when an error is found.
+   * - explicit: the user asked for this scan → thorough model and visible feedback.
    */
   const processRealFrame = useCallback(
-    async (opts: { frame?: string; explicit?: boolean; navigate?: boolean } = {}) => {
+    async (opts: { frame?: string; explicit?: boolean } = {}) => {
       if (isProcessingFrameRef.current) return;
-      const frameBase64 = opts.frame || activeFrameImage || grabVideoFrame();
+      const frameBase64 = opts.frame || activeFrameImage || grabVideoFrame(opts.explicit ? 1600 : 1024);
       if (!frameBase64) {
         if (opts.explicit) setErrorMessage('Camera is not ready yet. Try again or upload a screenshot.');
         return;
       }
 
       isProcessingFrameRef.current = true;
+      lastScanAtRef.current = Date.now();
+      const thumbAtCapture = captureThumb();
+      thumbAtLastScanRef.current = thumbAtCapture;
       setIsProcessingFrame(true);
       if (opts.explicit) setErrorMessage(null);
 
+      const report = reportRef.current;
+      const idx = guideIdxRef.current;
+      const guiding = !!report && idx !== null && !opts.explicit;
+      const epoch = epochRef.current;
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const isCurrent = () => mountedRef.current && epoch === epochRef.current;
+
       try {
+        const step = guiding ? report!.troubleshootingSteps[idx!] : undefined;
         const res = await fetch('/api/realtime-solve', {
           method: 'POST',
+          signal: controller.signal,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             frameBase64,
-            sessionContext: {
-              detectedError: detectedErrorRef.current,
-              affectedComponent: affectedComponentRef.current,
-            },
-            currentStepNumber: 1,
+            mode: opts.explicit ? 'thorough' : 'quick',
+            sessionContext: report
+              ? { detectedError: report.problemSummary, affectedComponent: report.affectedComponent }
+              : {},
+            guide: guiding
+              ? {
+                  problem: report!.problemSummary,
+                  os: report!.systemContext,
+                  stepNumber: idx! + 1,
+                  totalSteps: report!.troubleshootingSteps.length,
+                  stepTitle: step?.title,
+                  stepInstruction: step?.description,
+                  expectedOutcome: step?.expectedOutcome,
+                  lastTip: liveTipRef.current,
+                }
+              : undefined,
           }),
         });
 
         const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.success || !data.analysis) {
-          throw new Error(data.error || 'Analysis failed. Please try again.');
+        if (!isCurrent()) return; // user moved on (new step, fixed, reset or left) — ignore this result
+        if (!res.ok || !data.success) throw new Error(data.error || 'Analysis failed. Please try again.');
+
+        if (guiding) {
+          // Live camera only: if the screen changed a lot while we waited, the tip is out of date.
+          const stale = !activeFrameImage && screenChangedSince(thumbAtCapture, CHANGE_THRESHOLD * 1.5);
+          if (data.progress) handleProgress(data.progress, stale);
+          return;
         }
 
         const a = data.analysis;
+        if (!a) throw new Error('Analysis failed. Please try again.');
         const isUnclear = a.screenState === 'UNCLEAR';
         const hasError =
           !isUnclear &&
           (a.screenState === 'ERROR_ACTIVE' || (str(a.detectedError) && a.screenState !== 'NO_ERROR_DETECTED'));
 
         if (isUnclear) {
-          // FixLens can't read the screen well enough — ask instead of guessing.
           setBoundingBox(null);
           const ask =
             str(a.realtimeSpokenGuidance) ||
             "I can't quite read that. Could you move closer to the error, or upload a screenshot?";
-          if (opts.explicit || opts.frame) {
-            setErrorMessage(ask);
-            if (ask !== lastSpokenTextRef.current) {
-              lastSpokenTextRef.current = ask;
-              speakVoiceFeedback(ask);
-            }
-          }
+          setErrorMessage(ask);
+          if (ask !== lastSpokenTextRef.current) say(ask, !!(opts.explicit || opts.frame));
         } else if (hasError) {
           const title = str(a.detectedError) || 'Detected error';
           const code = str(a.errorCode);
@@ -373,32 +749,26 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
             reportIdRef.current = 'fl_' + Date.now().toString(36);
           }
 
-          const report = buildReport(a, reportIdRef.current, frameBase64);
-          const voiceText =
-            str(a.realtimeSpokenGuidance) ||
-            `Detected ${title}. ${str(a.currentActionInstruction) || 'Follow the steps to fix it.'}`;
-
-          detectedErrorRef.current = report.problemSummary;
-          affectedComponentRef.current = report.affectedComponent;
-          setDetectedError(report.problemSummary);
-          setDetectedCode(report.detectedErrorCodes[0] || null);
-          setSpokenGuidance(voiceText);
+          const newReport = buildReport(a, reportIdRef.current, frameBase64);
+          setDetectedError(newReport.problemSummary);
+          setDetectedCode(newReport.detectedErrorCodes[0] || null);
+          setSpokenGuidance(str(a.realtimeSpokenGuidance) || null);
           setBoundingBox(parseBoundingBox(a.boundingBoxHint));
-          setLatestReport(report);
+          setLatestReport(newReport);
           setErrorMessage(null);
 
-          if (voiceText !== lastSpokenTextRef.current) {
-            lastSpokenTextRef.current = voiceText;
-            speakVoiceFeedback(voiceText);
-          }
-
-          // Only save/notify when something new was found or the user explicitly scanned.
-          if (isNewProblem || opts.explicit || opts.navigate) {
-            onAnalyzed(report, { autoNavigate: !!opts.navigate });
+          if (isNewProblem || opts.explicit) {
+            onAnalyzed(newReport, { autoNavigate: false });
+            // Spoken intro: what's happening in friend terms (from the model), then "let's fix it".
+            const explanation = str(a.realtimeSpokenGuidance);
+            const intro = explanation
+              ? `Ok, here's what's happening. ... ${explanation} ... Let's fix it together.`
+              : `Ok, I can see the problem. ... ${newReport.problemSummary}. ... Let's fix it together.`;
+            startGuide(newReport, intro);
           }
         } else {
           setBoundingBox(null);
-          if (opts.explicit) {
+          if (opts.explicit || opts.frame) {
             setErrorMessage(
               str(a.observedSymptomSummary)
                 ? `No error detected: ${str(a.observedSymptomSummary)}`
@@ -407,27 +777,41 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
           }
         }
       } catch (err: any) {
-        if (opts.explicit || opts.frame) setErrorMessage(err?.message || 'Analysis failed. Please try again.');
+        if (err?.name === 'AbortError' || !isCurrent()) return;
+        if (opts.explicit || opts.frame) {
+          const unreachable = err instanceof TypeError;
+          setErrorMessage(
+            unreachable
+              ? "Can't reach the FixLens server. Check your connection and try again."
+              : err?.message || 'Analysis failed. Please try again.'
+          );
+        }
       } finally {
+        if (abortRef.current === controller) abortRef.current = null;
         isProcessingFrameRef.current = false;
-        setIsProcessingFrame(false);
+        if (mountedRef.current) setIsProcessingFrame(false);
       }
     },
-    [activeFrameImage, grabVideoFrame, speakVoiceFeedback, onAnalyzed]
+    [activeFrameImage, grabVideoFrame, captureThumb, screenChangedSince, handleProgress, onAnalyzed, startGuide, say]
   );
 
-  // Continuous scanning only while the live camera is showing and the tab is visible.
+  // Live camera loop: scan when the screen changes (or after an idle timeout).
   useEffect(() => {
     if (!cameraActive || activeFrameImage) return;
-    const initialTimer = setTimeout(() => processRealFrame(), 1500);
+    const first = setTimeout(() => processRealFrame(), 1200);
     const interval = setInterval(() => {
-      if (document.visibilityState === 'visible') processRealFrame();
-    }, LIVE_SCAN_INTERVAL_MS);
+      if (document.visibilityState !== 'visible') return;
+      if (isProcessingFrameRef.current || fixedCandidateRef.current) return;
+      const since = Date.now() - lastScanAtRef.current;
+      if (since < MIN_SCAN_GAP_MS) return;
+      const idle = guideIdxRef.current !== null ? IDLE_RESCAN_GUIDE_MS : IDLE_RESCAN_DETECT_MS;
+      if (screenChangedSinceLastScan() || since > idle) processRealFrame();
+    }, TICK_MS);
     return () => {
-      clearTimeout(initialTimer);
+      clearTimeout(first);
       clearInterval(interval);
     };
-  }, [cameraActive, activeFrameImage, processRealFrame]);
+  }, [cameraActive, activeFrameImage, processRealFrame, screenChangedSinceLastScan]);
 
   useEffect(() => {
     const t = setTimeout(() => initPersistentCamera(), 10);
@@ -436,6 +820,8 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
       stopPersistentCamera();
     };
   }, [initPersistentCamera, stopPersistentCamera]);
+
+  // ---------------------------------------------------------------- still images
 
   const rasterizeToJpeg = useCallback((rawUrl: string, onReady: (jpegUrl: string) => void) => {
     if (typeof window === 'undefined') return;
@@ -466,22 +852,33 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
     img.src = rawUrl;
   }, []);
 
+  const resetDetection = () => {
+    bumpEpoch();
+    soundManager.stop();
+    setDetectedError(null);
+    setDetectedCode(null);
+    setBoundingBox(null);
+    setLatestReport(null);
+    setSpokenGuidance(null);
+    setLiveTip(null);
+    setFixedCandidate(false);
+    setGuideIdx(null);
+    reportRef.current = null;
+    lastSpokenTextRef.current = '';
+    lastSignatureRef.current = '';
+    liveTipRef.current = '';
+  };
+
   const loadStillImage = useCallback(
     (rawUrl: string, scenarioId: string | null) => {
       rasterizeToJpeg(rawUrl, (jpegUrl) => {
         setActiveFrameImage(jpegUrl);
         setActiveScenarioId(scenarioId);
-        setDetectedError(null);
-        setDetectedCode(null);
-        setBoundingBox(null);
-        setLatestReport(null);
-        lastSpokenTextRef.current = '';
-        lastSignatureRef.current = '';
-        detectedErrorRef.current = null;
-        affectedComponentRef.current = null;
+        resetDetection();
         processRealFrame({ frame: jpegUrl, explicit: true });
       });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [rasterizeToJpeg, processRealFrame]
   );
 
@@ -526,60 +923,77 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
     }
   }, [initialImage, initialPreset, loadStillImage, handleLoadScenario]);
 
-  const handleSeeFix = () => {
-    if (latestReport) {
-      stopPersistentCamera();
-      onAnalyzed(latestReport, { autoNavigate: true });
-    } else {
-      processRealFrame({ explicit: true, navigate: true });
+  const handleCopy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
     }
   };
 
+  // ---------------------------------------------------------------- render
+
+  const guiding = guideIdx !== null && latestReport !== null && latestReport.troubleshootingSteps.length > 0;
+  const steps = latestReport?.troubleshootingSteps || [];
+  const currentStep = guiding ? steps[Math.min(guideIdx!, steps.length - 1)] : undefined;
+  const watching = cameraActive && !activeFrameImage;
+
+  const statusText = isProcessingFrame && !guiding
+    ? 'Analysing…'
+    : guiding
+    ? `Step ${guideIdx! + 1}/${steps.length}${watching ? ' · watching' : ''}`
+    : detectedError
+    ? `Detected${detectedCode ? `: ${detectedCode}` : ''}`
+    : watching
+    ? 'Scanning…'
+    : 'Ready';
+
   return (
-    <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 select-none animate-fadeIn space-y-4">
-      <div className="flex items-center justify-between text-slate-700">
+    <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-4 select-none animate-fadeIn space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between text-ink">
         <button
           type="button"
           onClick={() => {
             stopPersistentCamera();
             onClose();
           }}
-          className="w-10 h-10 rounded-full bg-white border border-slate-200/90 shadow-xs flex items-center justify-center text-slate-700 hover:bg-slate-50 transition"
+          className="h-9 w-9 rounded-lg bg-white border border-hairline flex items-center justify-center text-ink hover:bg-paper transition"
           aria-label="Close scanner"
         >
           <X className="w-5 h-5" />
         </button>
 
+        <span className="eyebrow text-accent-700 hidden sm:inline mr-auto ml-4">01 / Scan</span>
+
         <div
-          className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900/80 backdrop-blur-md text-white text-xs font-bold shadow-md"
+          className="flex items-center gap-2 h-8 px-3 rounded-full bg-white border border-hairline text-ink text-xs font-medium"
           role="status"
           aria-live="polite"
         >
           <span
-            className={`w-2.5 h-2.5 rounded-full ${detectedCode || detectedError ? 'bg-rose-400' : 'bg-emerald-400'} animate-pulse`}
+            className={`w-2 h-2 rounded-full ${detectedError && !guiding ? 'bg-rose-500' : 'bg-emerald-500'} ${
+              watching || isProcessingFrame ? 'animate-pulse' : ''
+            }`}
           />
-          <span>
-            {isProcessingFrame
-              ? 'Analysing…'
-              : detectedError
-              ? `Detected${detectedCode ? `: ${detectedCode}` : ''}`
-              : cameraActive && !activeFrameImage
-              ? 'Scanning…'
-              : 'Ready'}
-          </span>
+          <span>{statusText}</span>
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={toggleTorch}
-            aria-label="Toggle flashlight"
-            className={`w-10 h-10 rounded-full bg-white border border-slate-200/90 shadow-xs flex items-center justify-center transition ${
-              torchOn ? 'text-amber-500' : 'text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            {torchOn ? <Zap className="w-5 h-5 fill-amber-500" /> : <ZapOff className="w-5 h-5" />}
-          </button>
+          {torchSupported && watching && (
+            <button
+              type="button"
+              onClick={toggleTorch}
+              aria-label="Toggle flashlight"
+              className={`h-9 w-9 rounded-lg bg-white border border-hairline flex items-center justify-center transition ${
+                torchOn ? 'text-amber-500' : 'text-ink-soft hover:bg-paper'
+              }`}
+            >
+              {torchOn ? <Zap className="w-5 h-5 fill-amber-500" /> : <ZapOff className="w-5 h-5" />}
+            </button>
+          )}
 
           <button
             type="button"
@@ -588,8 +1002,8 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
               setIsMuted(!isMuted);
             }}
             aria-label={isMuted ? 'Unmute voice guidance' : 'Mute voice guidance'}
-            className={`w-10 h-10 rounded-full bg-white border border-slate-200/90 shadow-xs flex items-center justify-center transition ${
-              isMuted ? 'text-rose-500' : 'text-blue-600 hover:bg-slate-50'
+            className={`h-9 w-9 rounded-lg bg-white border border-hairline flex items-center justify-center transition ${
+              isMuted ? 'text-rose-500' : 'text-accent-600 hover:bg-paper'
             }`}
           >
             {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
@@ -598,11 +1012,10 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        <div className="lg:col-span-8 space-y-3">
-          <div className="relative w-full aspect-[4/3] sm:aspect-video bg-black rounded-3xl overflow-hidden shadow-2xl border border-slate-800 flex items-center justify-center">
-            {!activeFrameImage && (
-              <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-            )}
+        {/* Viewfinder */}
+        <div className="lg:col-span-7 space-y-3">
+          <div className="relative w-full aspect-[4/3] sm:aspect-video bg-black rounded-xl overflow-hidden border border-slate-900 flex items-center justify-center">
+            {!activeFrameImage && <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />}
 
             {activeFrameImage && (
               // eslint-disable-next-line @next/next/no-img-element
@@ -610,13 +1023,13 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
             )}
 
             {cameraError && !activeFrameImage && (
-              <div className="absolute p-6 text-center z-10 bg-white rounded-3xl border border-slate-200 max-w-xs shadow-xl space-y-3">
-                <Camera className="w-10 h-10 text-blue-600 mx-auto" />
-                <p className="text-xs text-slate-600 font-medium">{cameraError}</p>
+              <div className="absolute p-6 text-center z-10 bg-white rounded-xl border border-hairline max-w-xs shadow-xl space-y-3">
+                <Camera className="w-10 h-10 text-accent-600 mx-auto" />
+                <p className="text-xs text-ink-soft font-medium">{cameraError}</p>
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold shadow-sm"
+                  className="px-4 py-2 bg-ink text-white rounded-lg text-xs font-medium shadow-sm"
                 >
                   Upload Screenshot
                 </button>
@@ -625,16 +1038,16 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
 
             <div className="absolute inset-x-8 inset-y-10 pointer-events-none flex flex-col justify-between">
               <div className="flex justify-between">
-                <span className="w-10 h-10 border-t-[3.5px] border-l-[3.5px] border-white/95 rounded-tl-2xl shadow-sm" />
-                <span className="w-10 h-10 border-t-[3.5px] border-r-[3.5px] border-white/95 rounded-tr-2xl shadow-sm" />
+                <span className="w-10 h-10 border-t-2 border-l-2 border-white/95 rounded-tl-2xl shadow-sm" />
+                <span className="w-10 h-10 border-t-2 border-r-2 border-white/95 rounded-tr-2xl shadow-sm" />
               </div>
               <div className="flex justify-between">
-                <span className="w-10 h-10 border-b-[3.5px] border-l-[3.5px] border-white/95 rounded-bl-2xl shadow-sm" />
-                <span className="w-10 h-10 border-b-[3.5px] border-r-[3.5px] border-white/95 rounded-br-2xl shadow-sm" />
+                <span className="w-10 h-10 border-b-2 border-l-2 border-white/95 rounded-bl-2xl shadow-sm" />
+                <span className="w-10 h-10 border-b-2 border-r-2 border-white/95 rounded-br-2xl shadow-sm" />
               </div>
             </div>
 
-            {boundingBox && detectedError && (
+            {boundingBox && (detectedError || guiding) && (
               <div
                 style={{
                   position: 'absolute',
@@ -643,35 +1056,40 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
                   width: `${boundingBox.widthPercent}%`,
                   height: `${boundingBox.heightPercent}%`,
                 }}
-                className="border-2 border-rose-500 bg-rose-500/10 rounded-xl pointer-events-none transition-all flex items-start p-1.5 shadow-lg shadow-rose-500/30"
+                className={`border-2 rounded-lg pointer-events-none transition-all flex items-start p-1.5 shadow-lg ${
+                  guiding ? 'border-accent-400 bg-accent-400/10 shadow-accent-400/30' : 'border-rose-500 bg-rose-500/10 shadow-rose-500/30'
+                }`}
               >
-                <span className="text-[10px] font-black text-white bg-rose-600 px-2 py-0.5 rounded shadow-sm">
-                  {detectedCode || 'ERROR DETECTED'}
+                <span
+                  className={`text-[10px] font-semibold text-white px-2 py-0.5 rounded shadow-sm ${guiding ? 'bg-accent-600' : 'bg-rose-600'}`}
+                >
+                  {guiding ? boundingBox.label || 'Look here' : detectedCode || 'ERROR DETECTED'}
                 </span>
               </div>
             )}
 
-            {(isProcessingFrame || detectedError) && (
-              <div className="absolute bottom-20 inset-x-8 z-20 flex justify-center pointer-events-none">
-                <div className="bg-slate-900/85 backdrop-blur-md text-white px-5 py-3 rounded-2xl flex items-center gap-3 shadow-2xl border border-white/10 max-w-sm">
-                  {isProcessingFrame && <Loader2 className="w-5 h-5 text-sky-400 animate-spin shrink-0" />}
-                  <div className="text-left">
-                    <span className="text-xs font-bold text-white block">
-                      {isProcessingFrame ? 'Analysing your screen...' : detectedError}
-                    </span>
-                    <span className="text-[10px] text-slate-300 font-medium">
-                      {isProcessingFrame ? 'This will only take a few seconds.' : 'Tap “See Step-by-Step Fix”'}
-                    </span>
-                  </div>
+            {/* Caption overlay: live tip while guiding, otherwise analysis status */}
+            {(isProcessingFrame && !guiding) || liveTip ? (
+              <div className="absolute bottom-20 inset-x-6 z-20 flex justify-center pointer-events-none">
+                <div className="bg-slate-900/85 backdrop-blur-md text-white px-4 py-2.5 rounded-lg flex items-center gap-2.5 border border-white/10 max-w-md">
+                  {liveTip ? (
+                    <Eye className="w-5 h-5 text-accent-400 shrink-0" />
+                  ) : (
+                    <Loader2 className="w-5 h-5 text-accent-400 animate-spin shrink-0" />
+                  )}
+                  <span className="text-sm text-white text-left leading-snug">
+                    {liveTip || 'Analysing your screen…'}
+                  </span>
                 </div>
               </div>
-            )}
+            ) : null}
 
+            {/* Bottom controls */}
             <div className="absolute bottom-4 inset-x-8 z-20 flex items-center justify-between">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="w-11 h-11 rounded-2xl bg-black/60 hover:bg-black/80 backdrop-blur-md text-white border border-white/20 flex items-center justify-center transition active:scale-95 shadow-md"
+                className="w-10 h-10 rounded-lg bg-black/55 hover:bg-black/75 backdrop-blur-md text-white border border-white/15 flex items-center justify-center transition-colors"
                 aria-label="Upload screenshot"
               >
                 <ImageIcon className="w-5 h-5" />
@@ -680,116 +1098,345 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
               <button
                 type="button"
                 disabled={isProcessingFrame}
-                onClick={() => processRealFrame({ explicit: true })}
-                className="w-16 h-16 rounded-full border-[3px] border-white p-1 flex items-center justify-center bg-black/20 backdrop-blur-xs active:scale-95 transition shadow-2xl disabled:opacity-60"
+                onClick={() => {
+                  resetDetection();
+                  processRealFrame({ explicit: true });
+                }}
+                className="w-14 h-14 rounded-full border-[3px] border-white p-1 flex items-center justify-center bg-black/20 backdrop-blur-xs transition disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400"
                 aria-label="Scan now"
+                title="Scan now"
               >
-                <div className="w-full h-full rounded-full bg-white active:bg-sky-200 transition" />
+                <div className="w-full h-full rounded-full bg-white active:bg-accent-100 transition" />
               </button>
 
-              <button
-                type="button"
-                disabled={!spokenGuidance}
-                onClick={() => {
-                  if (spokenGuidance) speakVoiceFeedback(spokenGuidance);
-                }}
-                className="w-11 h-11 rounded-2xl bg-black/60 hover:bg-black/80 backdrop-blur-md text-white border border-white/20 flex items-center justify-center transition active:scale-95 shadow-md disabled:opacity-50"
-                aria-label="Repeat voice guidance"
-              >
-                <Mic className="w-5 h-5" />
-              </button>
+              {handsFree.supported ? (
+                <button
+                  type="button"
+                  onClick={handsFree.toggle}
+                  className={`w-10 h-10 rounded-lg backdrop-blur-md border flex items-center justify-center transition-colors ${
+                    handsFree.enabled
+                      ? 'bg-emerald-600 text-white border-emerald-500'
+                      : 'bg-black/55 hover:bg-black/75 text-white border-white/15'
+                  }`}
+                  aria-label={handsFree.enabled ? 'Turn off hands-free voice' : 'Turn on hands-free voice'}
+                  aria-pressed={handsFree.enabled}
+                >
+                  {handsFree.enabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+                </button>
+              ) : (
+                <div className="w-11" />
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 overflow-x-auto scrollbar-none py-1">
-            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider shrink-0 mr-1">
-              Test Targets:
-            </span>
+          {/* Source: live camera vs. an example image (examples are tucked away to keep the view clean) */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {activeFrameImage && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveFrameImage(null);
+                  setActiveScenarioId(null);
+                  resetDetection();
+                  initPersistentCamera();
+                }}
+                className="px-3 py-1.5 rounded-full text-xs font-medium bg-ink text-white shadow-xs flex items-center gap-1.5"
+              >
+                <Camera className="w-3.5 h-3.5" />
+                Back to live camera
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => {
-                setActiveFrameImage(null);
-                setActiveScenarioId(null);
-                initPersistentCamera();
-              }}
-              className={`px-3 py-1.5 rounded-full text-xs font-bold transition shrink-0 ${
-                !activeFrameImage
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-              }`}
+              onClick={() => setShowExamples((v) => !v)}
+              aria-expanded={showExamples}
+              className="px-3 py-1.5 rounded-full text-xs font-medium bg-white text-ink-soft border border-hairline hover:bg-paper"
             >
-              Live Camera
+              {showExamples ? 'Hide examples' : 'Try an example error'}
             </button>
-
-            {REAL_WORLD_SCENARIOS.map((sc) => (
-              <button
-                key={sc.id}
-                type="button"
-                onClick={() => handleLoadScenario(sc)}
-                className={`px-3 py-1.5 rounded-full text-xs font-bold transition shrink-0 ${
-                  activeScenarioId === sc.id
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                {sc.title}
-              </button>
-            ))}
           </div>
+          {showExamples && (
+            <div className="flex items-center gap-2 overflow-x-auto scrollbar-none py-1">
+              {REAL_WORLD_SCENARIOS.map((sc) => (
+                <button
+                  key={sc.id}
+                  type="button"
+                  onClick={() => handleLoadScenario(sc)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold transition shrink-0 ${
+                    activeScenarioId === sc.id
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-white text-ink border border-hairline hover:bg-paper'
+                  }`}
+                >
+                  {sc.title.replace(/^\d+\.\s*/, '')}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {handsFree.supported && (
+            <p className="text-xs text-ink-soft flex items-center gap-1.5">
+              {handsFree.enabled ? (
+                <>
+                  <span className={`w-1.5 h-1.5 rounded-full ${handsFree.listening ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                  {handsFree.listening
+                    ? 'Listening. Say “next”, “back”, “repeat”, “it’s fixed”, or ask a question.'
+                    : 'Hands-free is on. Listening resumes when FixLens stops talking.'}
+                </>
+              ) : (
+                'Turn on the microphone for hands-free guidance while you work.'
+              )}
+            </p>
+          )}
+          {handsFree.error && <p className="text-[11px] text-rose-600 font-medium">{handsFree.error}</p>}
         </div>
 
-        <div className="lg:col-span-4 p-6 bg-white rounded-3xl border border-slate-200 shadow-md space-y-4">
-          <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 block">
-            Screen Analysis
-          </span>
-
+        {/* Guidance panel */}
+        <div className="lg:col-span-5 p-5 sm:p-6 bg-white rounded-xl border border-hairline shadow-[0_1px_2px_rgba(15,23,42,0.04)] space-y-4">
           {errorMessage && (
-            <div
-              role="alert"
-              className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-800 font-medium flex items-start gap-2"
-            >
+            <div role="alert" className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800 font-medium flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{errorMessage}</span>
             </div>
           )}
 
-          {detectedError ? (
-            <div className="space-y-4">
+          {guiding && currentStep ? (
+            <div className="space-y-4" aria-live="polite">
+              {/* Problem header */}
               <div>
-                <h3 className="text-lg font-black text-slate-900 leading-snug">{detectedError}</h3>
-                {detectedCode && (
-                  <span className="text-xs font-mono font-bold text-rose-600 mt-1 block">Code: {detectedCode}</span>
-                )}
+                <span className="eyebrow text-accent-700 block">Now fixing</span>
+                <h3 className="mt-1 font-display font-semibold tracking-tight text-2xl text-ink leading-tight">{latestReport!.problemSummary}</h3>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {detectedCode && (
+                    <span className="text-[10px] font-mono font-medium text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded-full">
+                      {detectedCode}
+                    </span>
+                  )}
+                  {latestReport!.systemContext && latestReport!.systemContext !== 'Unknown OS' && (
+                    <span className="text-[10px] font-medium text-ink-soft bg-slate-100 px-1.5 py-0.5 rounded-full">
+                      {latestReport!.systemContext}
+                    </span>
+                  )}
+                </div>
               </div>
 
-              {spokenGuidance && (
-                <div className="p-3.5 bg-blue-50/70 rounded-2xl border border-blue-100 text-xs text-slate-700 font-medium leading-relaxed">
-                  {spokenGuidance}
+              {fixedCandidate ? (
+                <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 space-y-3 text-center">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
+                  <p className="text-sm font-medium text-emerald-900">Is the problem fixed now?</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={confirmFixed}
+                      className="py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold"
+                    >
+                      Yes, it&apos;s fixed
+                    </button>
+                    <button
+                      type="button"
+                      onClick={notFixedYet}
+                      className="py-2.5 bg-white border border-hairline text-ink rounded-lg text-xs font-semibold"
+                    >
+                      Not yet
+                    </button>
+                  </div>
                 </div>
+              ) : (
+                <>
+                  {/* Progress */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px] font-medium text-ink-soft">
+                      <span>
+                        Step {guideIdx! + 1} of {steps.length}
+                      </span>
+                      {currentStep.isAdministratorRequired && (
+                        <span className="text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <ShieldAlert className="w-3 h-3" />
+                          {currentStep.actionType === 'terminal_cmd' ? 'Needs sudo' : 'Admin required'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-1" aria-hidden="true">
+                      {steps.map((_, i) => (
+                        <span key={i} className={`h-1 flex-1 rounded-full ${i <= guideIdx! ? 'bg-ink' : 'bg-slate-200'}`} />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Current step */}
+                  <div className="space-y-2">
+                    <h4 className="font-display font-semibold tracking-tight text-2xl sm:text-3xl text-ink leading-tight">{currentStep.title}</h4>
+                    {currentStep.description && (
+                      <p className="text-sm text-ink leading-relaxed select-text">{currentStep.description}</p>
+                    )}
+                  </div>
+
+                  {currentStep.command && (
+                    <div className="p-3 bg-slate-900 text-white rounded-lg border border-slate-800 text-xs font-mono space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span className="text-cyan-400 flex items-center gap-1 font-sans font-medium">
+                          <Terminal className="w-3.5 h-3.5" />
+                          {commandLabel(currentStep)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(currentStep.command || '')}
+                          className="text-slate-300 hover:text-white flex items-center gap-1 font-sans font-semibold transition"
+                        >
+                          {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          <span>{copied ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      </div>
+                      <div className="text-cyan-300 break-all select-text">{currentStep.command}</div>
+                    </div>
+                  )}
+
+                  {currentStep.safetyCaution && (
+                    <div role="note" className="p-3 bg-amber-50 rounded-lg border border-amber-200 flex items-start gap-2 text-xs text-amber-800">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span className="font-medium leading-relaxed">{currentStep.safetyCaution}</span>
+                    </div>
+                  )}
+
+                  {currentStep.expectedOutcome && (
+                    <div className="p-3 bg-emerald-50/70 rounded-lg border border-emerald-100 flex items-start gap-2 text-xs text-emerald-800">
+                      <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span className="font-medium leading-relaxed">
+                        <strong>You should see:</strong> {currentStep.expectedOutcome}
+                      </span>
+                    </div>
+                  )}
+
+                  {liveTip && (
+                    <div className="p-3 bg-paper rounded-lg border border-hairline flex items-start gap-2 text-xs text-ink">
+                      <Eye className="w-4 h-4 shrink-0 mt-0.5 text-accent-600" />
+                      <span className="font-medium leading-relaxed">{liveTip}</span>
+                    </div>
+                  )}
+
+                  {/* Step controls */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={back}
+                      disabled={guideIdx === 0}
+                      className="py-3 bg-white hover:bg-paper border border-hairline text-ink rounded-lg text-xs font-medium flex items-center justify-center gap-1 disabled:opacity-40"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={repeat}
+                      className="py-3 bg-white hover:bg-paper border border-hairline text-ink rounded-lg text-xs font-medium flex items-center justify-center gap-1"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      Repeat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={advance}
+                      className="py-3 bg-ink hover:bg-ink-2 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1"
+                    >
+                      {guideIdx! < steps.length - 1 ? 'Next' : 'Done'}
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </>
               )}
 
+              {/* Ask about this step (typed or spoken via hands-free) */}
+              <div className="space-y-2 pt-1 border-t border-hairline">
+                {exchange && (
+                  <div className="space-y-1.5 pt-3 text-xs">
+                    <p className="text-ink-soft">
+                      <span className="font-medium text-ink">You:</span> {exchange.heard}
+                    </p>
+                    <p className="text-ink leading-relaxed">
+                      <span className="font-medium text-blue-700">FixLens:</span>{' '}
+                      {exchange.reply ?? <Loader2 className="inline w-3 h-3 animate-spin" />}
+                    </p>
+                  </div>
+                )}
+                <form
+                  className="flex items-center gap-2 pt-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    askQuestion(question);
+                    setQuestion('');
+                  }}
+                >
+                  <input
+                    type="text"
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    maxLength={1000}
+                    placeholder="Stuck? Ask about this step…"
+                    aria-label="Ask about this step"
+                    className="flex-1 bg-slate-50 border border-hairline rounded-full px-3.5 py-2 text-xs text-ink placeholder:text-slate-400 focus:outline-none focus:border-accent-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!question.trim()}
+                    className="w-9 h-9 rounded-full bg-ink text-white flex items-center justify-center disabled:opacity-40"
+                    aria-label="Send question"
+                  >
+                    <Send className="w-4 h-4" />
+                  </button>
+                </form>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!latestReport) return;
+                    stopPersistentCamera();
+                    onAnalyzed(latestReport, { autoNavigate: true });
+                  }}
+                  className="w-full text-[11px] font-medium text-ink-soft hover:text-accent-600 flex items-center justify-center gap-1 pt-1"
+                >
+                  <FileText className="w-3 h-3" />
+                  See full diagnosis & causes
+                </button>
+              </div>
+            </div>
+          ) : detectedError && latestReport ? (
+            // Detected but no steps were returned
+            <div className="space-y-3">
+              <h3 className="text-lg font-semibold text-ink leading-snug">{detectedError}</h3>
+              {spokenGuidance && (
+                <p className="p-3.5 bg-paper-deep/70 rounded-lg border border-hairline text-xs text-ink leading-relaxed">
+                  {spokenGuidance}
+                </p>
+              )}
               <button
                 type="button"
-                onClick={handleSeeFix}
-                className="w-full py-4 px-5 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-700 hover:to-blue-600 text-white rounded-2xl text-xs font-extrabold flex items-center justify-center gap-2 transition active:scale-98 shadow-lg shadow-blue-500/25"
+                onClick={() => {
+                  stopPersistentCamera();
+                  onAnalyzed(latestReport, { autoNavigate: true });
+                }}
+                className="w-full py-3 bg-ink hover:bg-ink-2 text-white rounded-lg text-xs font-semibold"
               >
-                <span>See Step-by-Step Fix</span>
-                <ArrowRight className="w-4 h-4" />
+                See full diagnosis
               </button>
             </div>
           ) : (
-            <div className="py-8 text-center text-slate-500 space-y-3">
-              <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
-                <Camera className="w-6 h-6" />
+            <div className="py-8 text-center text-ink-soft space-y-3">
+              <div className="w-12 h-12 rounded-lg bg-paper-deep text-accent-600 flex items-center justify-center mx-auto">
+                {isProcessingFrame ? <Loader2 className="w-6 h-6 animate-spin" /> : <Camera className="w-6 h-6" />}
               </div>
-              <p className="text-xs font-medium text-slate-600">
-                Point your camera at the error on your computer screen, or upload a screenshot.
+              <p className="font-display font-semibold tracking-tight text-3xl text-ink leading-tight">
+                {isProcessingFrame ? 'Looking at your screen…' : 'Point your camera at the error.'}
+              </p>
+              <p className="text-xs text-ink-soft">
+                FixLens spots the problem automatically, then talks you through the fix step by step while it watches your screen.
               </p>
               <button
                 type="button"
                 disabled={isProcessingFrame}
-                onClick={() => processRealFrame({ explicit: true, navigate: true })}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition shadow-xs disabled:opacity-60"
+                onClick={() => {
+                  resetDetection();
+                  processRealFrame({ explicit: true });
+                }}
+                className="px-4 py-2 bg-ink hover:bg-ink-2 text-white rounded-lg text-xs font-medium transition shadow-xs disabled:opacity-60"
               >
                 {isProcessingFrame ? 'Analysing…' : 'Scan Now'}
               </button>

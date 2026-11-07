@@ -5,6 +5,8 @@ import { rateLimit } from '@/lib/rate-limit';
 import { clip, parseModelJson } from '@/lib/api-utils';
 import { personaForJson } from '@/lib/prompts';
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   const limited = rateLimit(req, 'reassess', 10, 60_000);
   if (!limited.ok) {

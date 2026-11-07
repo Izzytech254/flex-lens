@@ -16,8 +16,9 @@ export default function OpengraphImage() {
           flexDirection: 'column',
           justifyContent: 'center',
           padding: '80px',
-          background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 55%, #0ea5e9 100%)',
-          color: 'white',
+          background: '#15171c',
+          borderBottom: '16px solid #e5582a',
+          color: '#f4f1eb',
           fontFamily: 'sans-serif',
         }}
       >
@@ -27,7 +28,7 @@ export default function OpengraphImage() {
               width: 96,
               height: 96,
               borderRadius: 24,
-              background: 'rgba(255,255,255,0.18)',
+              background: '#e5582a',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -43,7 +44,7 @@ export default function OpengraphImage() {
           AI Computer Technician
         </div>
         <div style={{ fontSize: 32, marginTop: 20, opacity: 0.9 }}>
-          Point your camera at any Windows error. Get the fix, step by step.
+          Point your phone at any computer error. Get the fix, step by step.
         </div>
         <div style={{ display: 'flex', gap: 16, marginTop: 48, fontSize: 26 }}>
           {['0x800704cf', '0x000006ba', '0x80070002', 'BSOD'].map((code) => (
@@ -52,7 +53,8 @@ export default function OpengraphImage() {
               style={{
                 padding: '10px 20px',
                 borderRadius: 999,
-                background: 'rgba(255,255,255,0.16)',
+                background: 'rgba(244,241,235,0.10)',
+                border: '1px solid rgba(244,241,235,0.2)',
                 fontFamily: 'monospace',
               }}
             >

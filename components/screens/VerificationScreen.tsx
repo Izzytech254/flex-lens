@@ -1,116 +1,86 @@
 'use client';
 
 import React, { useState } from 'react';
-import { ChevronLeft, Check, X, MessageSquare, FileText, HelpCircle } from 'lucide-react';
+import { Check, X, MessageSquare, HelpCircle } from 'lucide-react';
+import { DiagnosisReport } from '@/types/technician';
 import { soundManager } from '@/lib/sound-feedback';
+import ReportActions from '@/components/ReportActions';
+import { Button, Card, Page, PageHeader } from '@/components/ui';
 
 interface VerificationScreenProps {
-  problemSummary?: string;
+  report: DiagnosisReport | null;
   onBack: () => void;
+  /** Marks the report resolved (does not navigate) */
   onConfirmFixed: () => void;
   onNotFixed: () => void;
   onAskQuestion: () => void;
-  onViewDetails: () => void;
+  onDone: () => void;
 }
 
-// FixLens cannot see your PC after the steps, so the user confirms the result honestly.
-export default function VerificationScreen({
-  problemSummary,
-  onBack,
-  onConfirmFixed,
-  onNotFixed,
-  onAskQuestion,
-  onViewDetails,
-}: VerificationScreenProps) {
-  const [answer, setAnswer] = useState<'fixed' | null>(null);
+// FixLens can't see your PC after the steps, so the user confirms the result honestly.
+export default function VerificationScreen({ report, onBack, onConfirmFixed, onNotFixed, onAskQuestion, onDone }: VerificationScreenProps) {
+  const [fixed, setFixed] = useState(false);
 
   const confirmFixed = () => {
     soundManager.playSoundEffect('success');
-    setAnswer('fixed');
-    setTimeout(onConfirmFixed, 900);
+    onConfirmFixed();
+    setFixed(true);
   };
 
   return (
-    <div className="w-full max-w-lg mx-auto px-4 py-8 select-none animate-fadeIn space-y-6">
-      <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
-        <button
-          type="button"
-          onClick={onBack}
-          className="w-9 h-9 rounded-full bg-white border border-slate-200/90 shadow-xs flex items-center justify-center text-slate-700 hover:bg-slate-50 transition"
-          aria-label="Back to fix guide"
-        >
-          <ChevronLeft className="w-5 h-5" />
-        </button>
-        <h2 className="text-base font-extrabold text-slate-900">Verification</h2>
-        <div className="w-9" />
-      </div>
+    <Page size="sm">
+      <PageHeader
+        eyebrow="04 / Confirm"
+        title={fixed ? 'All sorted.' : 'Did that fix it?'}
+        onBack={fixed ? undefined : onBack}
+        backLabel="Fix guide"
+      />
 
-      <div className="p-6 sm:p-8 bg-white rounded-3xl border border-slate-200/80 shadow-md space-y-6 text-center">
-        {answer === 'fixed' ? (
-          <>
-            <div className="w-20 h-20 rounded-full bg-emerald-500 text-white flex items-center justify-center mx-auto shadow-xl shadow-emerald-500/25">
-              <Check className="w-10 h-10 stroke-[3.5]" />
+      <Card className="text-center">
+        {fixed ? (
+          <div className="py-2">
+            <div className="mx-auto w-12 h-12 rounded-full bg-moss-100 text-moss-500 flex items-center justify-center">
+              <Check className="w-6 h-6" strokeWidth={2.5} />
             </div>
-            <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">Problem solved!</h1>
-            <p className="text-sm text-slate-600">Saved to your history.</p>
-          </>
+            <h2 className="mt-4 font-display font-semibold tracking-tight text-3xl text-ink">Problem solved</h2>
+            <p className="mt-1 text-sm text-ink-soft">Saved to your history. Keep a copy of what was fixed:</p>
+            <div className="mt-6 space-y-2 text-left">
+              {report && <ReportActions report={{ ...report, resolved: true }} />}
+              <Button size="lg" fullWidth onClick={onDone}>
+                Done
+              </Button>
+            </div>
+          </div>
         ) : (
-          <>
-            <div className="w-20 h-20 rounded-full bg-blue-600 text-white flex items-center justify-center mx-auto shadow-xl shadow-blue-500/25">
-              <HelpCircle className="w-10 h-10" />
+          <div className="py-2">
+            <div className="mx-auto w-12 h-12 rounded-full bg-accent-100 text-accent-700 flex items-center justify-center">
+              <HelpCircle className="w-6 h-6" />
             </div>
+            <h2 className="mt-4 font-display font-semibold tracking-tight text-3xl text-ink">Is the error gone?</h2>
+            <p className="mt-1 text-sm text-ink-soft max-w-sm mx-auto">
+              {report?.problemSummary
+                ? `Check whether “${report.problemSummary}” still shows up on your computer.`
+                : 'Check whether the error still shows up on your computer.'}
+            </p>
 
-            <div className="space-y-2">
-              <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight leading-tight">
-                Did this fix the problem?
-              </h1>
-              <p className="text-xs sm:text-sm text-slate-600 font-medium max-w-sm mx-auto">
-                {problemSummary
-                  ? `Check whether “${problemSummary}” still appears on your computer.`
-                  : 'Check whether the error still appears on your computer.'}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={confirmFixed}
-                className="py-4 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-sm font-extrabold shadow-lg shadow-emerald-500/25 flex items-center justify-center gap-2 transition active:scale-98"
-              >
+            <div className="mt-6 grid grid-cols-2 gap-2">
+              <Button variant="success" size="lg" onClick={confirmFixed}>
                 <Check className="w-4 h-4" />
-                Yes, it&apos;s fixed
-              </button>
-              <button
-                type="button"
-                onClick={onNotFixed}
-                className="py-4 px-4 bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 rounded-2xl text-sm font-extrabold flex items-center justify-center gap-2 transition active:scale-98"
-              >
+                Yes, it’s fixed
+              </Button>
+              <Button variant="secondary" size="lg" onClick={onNotFixed}>
                 <X className="w-4 h-4" />
-                No, rescan
-              </button>
+                Not yet
+              </Button>
             </div>
 
-            <div className="p-4 bg-slate-50/70 rounded-2xl border border-slate-100/80 text-left space-y-1.5">
-              <button
-                type="button"
-                onClick={onAskQuestion}
-                className="w-full p-2.5 bg-white hover:bg-blue-50/50 border border-slate-200/70 rounded-xl flex items-center gap-3 text-xs font-bold text-slate-800 transition shadow-xs"
-              >
-                <MessageSquare className="w-4 h-4 text-blue-600" />
-                Ask FixLens a question
-              </button>
-              <button
-                type="button"
-                onClick={onViewDetails}
-                className="w-full p-2.5 bg-white hover:bg-blue-50/50 border border-slate-200/70 rounded-xl flex items-center gap-3 text-xs font-bold text-slate-800 transition shadow-xs"
-              >
-                <FileText className="w-4 h-4 text-blue-600" />
-                View diagnosis details
-              </button>
-            </div>
-          </>
+            <Button variant="ghost" size="sm" onClick={onAskQuestion} className="mt-4 text-accent-700">
+              <MessageSquare className="w-4 h-4" />
+              Ask FixLens about it
+            </Button>
+          </div>
         )}
-      </div>
-    </div>
+      </Card>
+    </Page>
   );
 }

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateContentWithFallback } from '@/lib/gemini';
+import { aiErrorResponseInit, generateContentWithFallback } from '@/lib/gemini';
 import { rateLimit } from '@/lib/rate-limit';
 import { TECHNICIAN_PERSONA } from '@/lib/prompts';
+
+export const maxDuration = 60;
 
 function clip(value: unknown, max: number): string {
   return typeof value === 'string' ? value.slice(0, max) : '';
@@ -74,6 +76,8 @@ Reply out loud in 1 to 4 short spoken sentences. No markdown, no lists. Explain 
     return NextResponse.json({ success: true, reply });
   } catch (error: any) {
     console.error('Voice assistant error:', error);
+    const known = aiErrorResponseInit(error);
+    if (known) return NextResponse.json({ error: known.message }, { status: known.status });
     return NextResponse.json({ error: 'Voice assistant encountered an error.' }, { status: 500 });
   }
 }

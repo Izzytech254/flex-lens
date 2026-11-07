@@ -1,8 +1,10 @@
 'use client';
 
 import React from 'react';
-import { CheckCircle2, AlertCircle, HelpCircle, ChevronRight, Trash2, Wifi, Printer, RefreshCw } from 'lucide-react';
+import { ChevronRight, Trash2, Wifi, Printer, RefreshCw, Download, History as HistoryIcon } from 'lucide-react';
 import { DiagnosisReport } from '@/types/technician';
+import { downloadReport } from '@/lib/report-export';
+import { Badge, Button, Card, EmptyState, IconButton, Page, PageHeader } from '@/components/ui';
 
 interface HistoryScreenProps {
   history: DiagnosisReport[];
@@ -12,9 +14,9 @@ interface HistoryScreenProps {
 }
 
 function statusOf(item: DiagnosisReport) {
-  if (item.resolved === true) return { label: 'Resolved', color: 'bg-emerald-500', Icon: CheckCircle2 };
-  if (item.resolved === false) return { label: 'Not fixed', color: 'bg-rose-500', Icon: AlertCircle };
-  return { label: 'Diagnosed', color: 'bg-blue-500', Icon: HelpCircle };
+  if (item.resolved === true) return { label: 'Resolved', tone: 'green' as const };
+  if (item.resolved === false) return { label: 'Not fixed', tone: 'red' as const };
+  return { label: 'Diagnosed', tone: 'blue' as const };
 }
 
 export default function HistoryScreen({ history, onSelectReport, onClearHistory, onLaunchScan }: HistoryScreenProps) {
@@ -24,79 +26,78 @@ export default function HistoryScreen({ history, onSelectReport, onClearHistory,
   };
 
   return (
-    <div className="w-full max-w-lg mx-auto px-4 py-8 select-none animate-fadeIn space-y-6">
-      <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
-        <div className="w-8" />
-        <h2 className="text-base font-extrabold text-slate-900">History</h2>
-        <button
-          type="button"
-          onClick={handleClear}
-          disabled={history.length === 0}
-          className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:text-rose-600 transition disabled:opacity-30"
-          aria-label="Clear history"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
+    <Page size="md">
+      <PageHeader
+        eyebrow="Archive"
+        title="Your fixes"
+        description="Every diagnosis is saved on this device only. Revisit a fix or download its report."
+        actions={
+          history.length > 0 ? (
+            <Button variant="danger" size="sm" onClick={handleClear}>
+              <Trash2 className="w-3.5 h-3.5" />
+              Clear
+            </Button>
+          ) : undefined
+        }
+      />
 
       {history.length > 0 ? (
-        <ul className="space-y-3">
-          {history.map((item, idx) => {
-            const { label, color, Icon } = statusOf(item);
-            return (
-              <li key={item.id || idx}>
-                <button
-                  type="button"
-                  onClick={() => onSelectReport(item)}
-                  className="w-full text-left p-4 bg-white hover:bg-slate-50 border border-slate-200/80 rounded-2xl shadow-xs flex items-center justify-between cursor-pointer transition active:scale-[0.99] group"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className={`w-9 h-9 rounded-full ${color} text-white flex items-center justify-center shrink-0`}>
-                      <Icon className="w-5 h-5" />
+        <Card padded={false} className="overflow-hidden">
+          <ul className="divide-y divide-hairline">
+            {history.map((item, idx) => {
+              const status = statusOf(item);
+              const date = new Date(item.createdAt);
+              return (
+                <li key={item.id || idx} className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => onSelectReport(item)}
+                    className="flex-1 min-w-0 text-left px-4 sm:px-6 py-4 flex items-center gap-4 hover:bg-paper transition-colors group focus-visible:outline-none focus-visible:bg-paper"
+                  >
+                    <span className="eyebrow text-ink-soft/70 w-6 shrink-0 hidden sm:block">{String(idx + 1).padStart(2, '0')}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-display font-semibold tracking-tight text-lg text-ink truncate group-hover:text-accent-600 transition-colors">{item.problemSummary}</p>
+                      <div className="mt-1 flex items-center gap-2 text-xs text-ink-soft">
+                        <Badge tone={status.tone}>{status.label}</Badge>
+                        <span>{date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                        {item.detectedErrorCodes?.[0] && <span className="font-mono hidden sm:inline">· {item.detectedErrorCodes[0]}</span>}
+                      </div>
                     </div>
-                    <div className="min-w-0">
-                      <h3 className="text-xs sm:text-sm font-bold text-slate-900 group-hover:text-blue-600 transition line-clamp-1">
-                        {item.problemSummary}
-                      </h3>
-                      <span className="text-[11px] text-slate-400 font-medium">
-                        {label} · {new Date(item.createdAt).toLocaleString()}
-                      </span>
-                    </div>
+                    <ChevronRight className="w-4 h-4 text-ink/25 group-hover:text-accent-600 shrink-0" />
+                  </button>
+                  <div className="pr-3 sm:pr-4">
+                    <IconButton label={`Download report for ${item.problemSummary}`} variant="ghost" size="sm" onClick={() => downloadReport(item)}>
+                      <Download className="w-4 h-4" />
+                    </IconButton>
                   </div>
-                  <div className="flex items-center gap-1 text-xs font-bold text-blue-600 shrink-0">
-                    <span>View</span>
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </div>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
       ) : (
-        <div className="p-6 bg-white rounded-3xl border border-slate-200/80 shadow-xs text-center space-y-4">
-          <p className="text-sm font-bold text-slate-900">No diagnoses yet</p>
-          <p className="text-xs text-slate-500">
-            Your scans are saved here on this device only. Try one of these examples:
-          </p>
-          <div className="grid grid-cols-3 gap-2">
-            {[
-              { preset: 'wifi' as const, label: 'Wi-Fi', Icon: Wifi },
-              { preset: 'printer' as const, label: 'Printer', Icon: Printer },
-              { preset: 'update' as const, label: 'Update', Icon: RefreshCw },
-            ].map(({ preset, label, Icon }) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => onLaunchScan?.(preset)}
-                className="p-3 rounded-2xl bg-slate-50 hover:bg-blue-50 border border-slate-200 text-xs font-bold text-slate-700 flex flex-col items-center gap-1.5 transition"
-              >
-                <Icon className="w-5 h-5 text-blue-600" />
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
+        <Card>
+          <EmptyState
+            icon={<HistoryIcon className="w-6 h-6" />}
+            title="No diagnoses yet"
+            description="When you scan an error, it shows up here so you can revisit the fix or download a report."
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                {[
+                  { preset: 'wifi' as const, label: 'Wi-Fi example', Icon: Wifi },
+                  { preset: 'printer' as const, label: 'Printer example', Icon: Printer },
+                  { preset: 'update' as const, label: 'Update example', Icon: RefreshCw },
+                ].map(({ preset, label, Icon }) => (
+                  <Button key={preset} variant="secondary" size="sm" onClick={() => onLaunchScan?.(preset)}>
+                    <Icon className="w-3.5 h-3.5 text-ink-soft" />
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            }
+          />
+        </Card>
       )}
-    </div>
+    </Page>
   );
 }

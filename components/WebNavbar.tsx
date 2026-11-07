@@ -1,160 +1,113 @@
 'use client';
 
-import React, { useState } from 'react';
-import {
-  Camera,
-  Wrench,
-  History,
-  Settings,
-  MessageSquare,
-  Menu,
-  X,
-  ShieldCheck,
-} from 'lucide-react';
-import AudioWaveIndicator from '@/components/AudioWaveIndicator';
+import React from 'react';
+import { Home, ScanLine, Wrench, History, Settings, MessageSquare } from 'lucide-react';
 import type { ScreenType } from '@/components/FixLensApp';
+import { Button, cx } from '@/components/ui';
 
 interface WebNavbarProps {
   currentScreen: ScreenType;
   onNavigate: (screen: ScreenType) => void;
   onOpenVoiceModal: () => void;
-  onOpenCompanionModal: () => void;
   hasActiveReport: boolean;
 }
 
-export default function WebNavbar({
-  currentScreen,
-  onNavigate,
-  onOpenVoiceModal,
-  onOpenCompanionModal,
-  hasActiveReport,
-}: WebNavbarProps) {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+type NavItem = { id: ScreenType; label: string; icon: React.ComponentType<{ className?: string }> };
 
-  const navItems: Array<{
-    id: ScreenType;
-    label: string;
-    icon: React.ComponentType<{ className?: string }>;
-  }> = [
-    { id: 'home', label: 'Home', icon: Camera },
-    { id: 'scanner', label: 'Scan', icon: Camera },
-    ...(hasActiveReport
-      ? [{ id: 'fixguide' as ScreenType, label: 'Fix Guide', icon: Wrench }]
-      : []),
+export default function WebNavbar({ currentScreen, onNavigate, onOpenVoiceModal, hasActiveReport }: WebNavbarProps) {
+  const navItems: NavItem[] = [
+    { id: 'home', label: 'Home', icon: Home },
+    { id: 'scanner', label: 'Scan', icon: ScanLine },
+    ...(hasActiveReport ? [{ id: 'fixguide' as ScreenType, label: 'Fix', icon: Wrench }] : []),
     { id: 'history', label: 'History', icon: History },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
-  const handleNavClick = (screen: ScreenType) => {
-    onNavigate(screen);
-    setMobileMenuOpen(false);
-  };
+  const isActive = (id: ScreenType) =>
+    currentScreen === id || (id === 'fixguide' && (currentScreen === 'diagnosis' || currentScreen === 'verification'));
 
   return (
-    <header className="sticky top-0 z-50 w-full bg-white/90 backdrop-blur-md border-b border-slate-200/80 text-slate-900 shadow-xs">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6">
-        <div className="flex items-center justify-between h-16">
-          {/* Brand Logo matching FixLens showcase: Camera lens with brackets */}
-          <div
-            className="flex items-center gap-2.5 cursor-pointer select-none"
+    <>
+      <header className="sticky top-0 z-40 w-full bg-paper/85 backdrop-blur-md border-b border-hairline">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-8">
+          <button
+            type="button"
             onClick={() => onNavigate('home')}
+            className="flex items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            aria-label="FixLens home"
           >
-            <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-md shadow-blue-500/20">
-              <Camera className="w-5 h-5 stroke-[2.2]" />
-            </div>
-            <div className="flex flex-col">
-              <span className="text-base font-extrabold tracking-tight text-slate-900">
-                FixLens
-              </span>
-            </div>
-          </div>
+            <span className="w-7 h-7 rounded-lg bg-ink text-accent-400 flex items-center justify-center">
+              <ScanLine className="w-3.5 h-3.5" />
+            </span>
+            <span className="font-display font-semibold text-[17px] tracking-tight leading-none text-ink">
+              Fix<span className="text-accent-500">Lens</span>
+            </span>
+          </button>
 
-          {/* Desktop Nav Links */}
-          <nav className="hidden md:flex items-center gap-1 bg-slate-100/80 p-1 rounded-xl border border-slate-200/60">
+          <nav aria-label="Main" className="hidden md:flex items-center gap-6 flex-1 h-full">
             {navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = currentScreen === item.id;
+              const active = isActive(item.id);
               return (
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => handleNavClick(item.id)}
-                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition ${
-                    isActive
-                      ? 'bg-white text-blue-600 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
-                  }`}
+                  onClick={() => onNavigate(item.id)}
+                  aria-current={active ? 'page' : undefined}
+                  className={cx(
+                    'relative h-full text-sm transition-colors focus-visible:outline-none focus-visible:text-ink',
+                    active ? 'text-ink font-medium' : 'text-ink-soft hover:text-ink'
+                  )}
                 >
-                  <Icon className="w-3.5 h-3.5" />
-                  <span>{item.label}</span>
+                  {item.label}
+                  <span
+                    aria-hidden="true"
+                    className={cx(
+                      'absolute left-0 right-0 -bottom-px h-0.5 rounded-full transition-colors',
+                      active ? 'bg-accent-500' : 'bg-transparent'
+                    )}
+                  />
                 </button>
               );
             })}
           </nav>
 
-          {/* Right Actions */}
-          <div className="flex items-center gap-2">
-            <AudioWaveIndicator />
-
-            <button
-              type="button"
-              onClick={onOpenVoiceModal}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700 transition"
-              title="Voice Assistant"
-            >
-              <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
-              <span className="hidden sm:inline">Ask AI</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onOpenCompanionModal}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-xs font-bold text-blue-700 transition border border-blue-200/60"
-              title="Pair with Windows PC"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
-              <span>FXL-8821</span>
-            </button>
-
-            {/* Mobile menu trigger */}
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="md:hidden p-2 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100"
-            >
-              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-            </button>
+          <div className="ml-auto">
+            <Button variant="primary" size="sm" onClick={onOpenVoiceModal}>
+              <MessageSquare className="w-4 h-4 text-accent-400" />
+              Ask FixLens
+            </Button>
           </div>
         </div>
-      </div>
+      </header>
 
-      {/* Mobile Drawer */}
-      {mobileMenuOpen && (
-        <div className="md:hidden bg-white border-b border-slate-200 px-4 py-3 space-y-1">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => handleNavClick(item.id)}
-              className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold ${
-                currentScreen === item.id ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-slate-100'
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => {
-              setMobileMenuOpen(false);
-              onOpenCompanionModal();
-            }}
-            className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold text-blue-600 hover:bg-blue-50"
-          >
-            PC Companion (FXL-8821)
-          </button>
-        </div>
-      )}
-    </header>
+      {/* Mobile bottom tab bar */}
+      <nav
+        aria-label="Main"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-paper/95 backdrop-blur-md border-t border-hairline pb-[env(safe-area-inset-bottom)]"
+      >
+        <ul className="flex">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = isActive(item.id);
+            return (
+              <li key={item.id} className="flex-1">
+                <button
+                  type="button"
+                  onClick={() => onNavigate(item.id)}
+                  aria-current={active ? 'page' : undefined}
+                  className={cx(
+                    'w-full pt-2 pb-2.5 flex flex-col items-center gap-1 text-[11px] font-medium transition-colors',
+                    active ? 'text-ink' : 'text-ink-soft/70'
+                  )}
+                >
+                  <Icon className="w-5 h-5" />
+                  {item.label}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+    </>
   );
 }

@@ -1,23 +1,10 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import {
-  ChevronLeft,
-  Volume2,
-  VolumeX,
-  RotateCcw,
-  ArrowRight,
-  Terminal,
-  Copy,
-  Check,
-  ShieldAlert,
-  AlertTriangle,
-  CheckCircle2,
-  Camera,
-  MousePointerClick,
-} from 'lucide-react';
+import { Volume2, VolumeX, RotateCcw, ArrowRight, ArrowLeft, Terminal, Copy, Check, ShieldAlert, Camera, MousePointerClick } from 'lucide-react';
 import { DiagnosisReport } from '@/types/technician';
 import { soundManager } from '@/lib/sound-feedback';
+import { Badge, Button, Card, EmptyState, IconButton, Notice, Page, PageHeader, cx } from '@/components/ui';
 
 interface FixGuideScreenProps {
   report: DiagnosisReport | null;
@@ -25,6 +12,8 @@ interface FixGuideScreenProps {
   onComplete: () => void;
   onStartScan: () => void;
 }
+
+const pad = (n: number) => String(n).padStart(2, '0');
 
 export default function FixGuideScreen({ report, onBack, onComplete, onStartScan }: FixGuideScreenProps) {
   const steps = report?.troubleshootingSteps || [];
@@ -43,53 +32,45 @@ export default function FixGuideScreen({ report, onBack, onComplete, onStartScan
 
   if (!report || steps.length === 0) {
     return (
-      <div className="w-full max-w-lg mx-auto px-4 py-16 text-center space-y-4 animate-fadeIn">
-        <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
-          <Camera className="w-7 h-7" />
-        </div>
-        <h1 className="text-xl font-black text-slate-900">No fix steps yet</h1>
-        <p className="text-sm text-slate-600">Scan an error first and FixLens will build a step-by-step guide for it.</p>
-        <button
-          type="button"
-          onClick={onStartScan}
-          className="px-5 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full text-sm font-bold shadow-md"
-        >
-          Start Scanning
-        </button>
-      </div>
+      <Page size="sm">
+        <Card>
+          <EmptyState
+            icon={<Camera className="w-6 h-6" />}
+            title="No fix steps yet"
+            description="Scan an error first and FixLens will build a step-by-step guide for it."
+            action={<Button onClick={onStartScan}>Start scanning</Button>}
+          />
+        </Card>
+      </Page>
     );
   }
 
-  const currentStep = steps[Math.min(activeStepIdx, steps.length - 1)];
-  const isCommand = !!currentStep.command;
+  const idx = Math.min(activeStepIdx, steps.length - 1);
+  const currentStep = steps[idx];
+  const isLast = idx === steps.length - 1;
+  const commandLabel =
+    currentStep.actionType === 'cmd_command' ? 'Command Prompt' : currentStep.actionType === 'terminal_cmd' ? 'Terminal' : 'PowerShell';
 
   const speakCurrentStep = () => {
     if (isSpeaking) {
       soundManager.stop();
       return;
     }
-    soundManager.playSoundEffect('step');
-    soundManager.speak(
-      `Step ${activeStepIdx + 1} of ${steps.length}: ${currentStep.title}. ${currentStep.description}${
-        currentStep.safetyCaution ? ` Caution: ${currentStep.safetyCaution}` : ''
-      }`
-    );
+    const lead = idx === 0 ? 'Ok so, first thing.' : isLast ? 'Alright, last thing.' : 'Alright, next thing.';
+    const body =
+      currentStep.spokenInstruction ||
+      (currentStep.description || currentStep.title).replace(/\s*[,;]?\s*(?:and then|then)\s+/gi, '. ... ');
+    const beats = [lead, body];
+    if (currentStep.command) beats.push("I've put the command on your screen. ... Just copy it in.");
+    if (currentStep.safetyCaution) beats.push(`One thing to watch out for. ... ${currentStep.safetyCaution}`);
+    beats.push("Tell me when you've done that.");
+    soundManager.speak(beats.join(' ... '));
   };
 
-  const handleNext = () => {
-    soundManager.playSoundEffect('step');
+  const goTo = (next: number) => {
     setCopied(false);
-    if (activeStepIdx < steps.length - 1) {
-      setActiveStepIdx(activeStepIdx + 1);
-    } else {
-      onComplete();
-    }
-  };
-
-  const handlePrev = () => {
-    setCopied(false);
-    if (activeStepIdx > 0) setActiveStepIdx(activeStepIdx - 1);
-    else onBack();
+    soundManager.stop();
+    setActiveStepIdx(next);
   };
 
   const handleCopy = async (text: string) => {
@@ -103,142 +84,140 @@ export default function FixGuideScreen({ report, onBack, onComplete, onStartScan
   };
 
   return (
-    <div className="w-full max-w-xl mx-auto px-4 py-8 select-none animate-fadeIn space-y-6">
-      <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
-        <button
-          type="button"
-          onClick={handlePrev}
-          className="w-9 h-9 rounded-full bg-white border border-slate-200/90 shadow-xs flex items-center justify-center text-slate-700 hover:bg-slate-50 transition"
-          aria-label={activeStepIdx > 0 ? 'Previous step' : 'Back to diagnosis'}
-        >
-          <ChevronLeft className="w-5 h-5" />
-        </button>
+    <Page size="lg">
+      <PageHeader
+        eyebrow="03 / The fix"
+        title={report.problemSummary}
+        onBack={onBack}
+        backLabel="Diagnosis"
+        actions={
+          <IconButton label={isSpeaking ? 'Stop reading' : 'Read step aloud'} variant={isSpeaking ? 'active' : 'secondary'} onClick={speakCurrentStep}>
+            {isSpeaking ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+          </IconButton>
+        }
+      />
 
-        <h2 className="text-base font-extrabold text-slate-900">Fix Guide</h2>
+      <div className="grid gap-6 lg:grid-cols-[220px_1fr] lg:gap-10">
+        {/* Step rail — like an altitude indicator for your progress */}
+        <nav aria-label="Steps" className="lg:sticky lg:top-20 self-start">
+          <p className="eyebrow text-ink-soft mb-3">
+            Step {pad(idx + 1)} / {pad(steps.length)}
+          </p>
+          <ol className="relative flex lg:flex-col gap-1 overflow-x-auto scrollbar-none lg:overflow-visible">
+            <span aria-hidden="true" className="hidden lg:block absolute left-[13px] top-3 bottom-3 w-px bg-hairline" />
+            {steps.map((s, i) => {
+              const state = i < idx ? 'done' : i === idx ? 'current' : 'todo';
+              return (
+                <li key={i} className="shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => goTo(i)}
+                    aria-current={state === 'current' ? 'step' : undefined}
+                    className="relative flex items-center gap-3 rounded-full lg:rounded-lg pr-3 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                  >
+                    <span
+                      className={cx(
+                        'relative z-10 w-7 h-7 rounded-full flex items-center justify-center font-mono text-[11px] border transition-colors',
+                        state === 'current' && 'bg-accent-500 border-accent-500 text-white',
+                        state === 'done' && 'bg-moss-500 border-moss-500 text-white',
+                        state === 'todo' && 'bg-paper border-hairline text-ink-soft'
+                      )}
+                    >
+                      {state === 'done' ? <Check className="w-3.5 h-3.5" /> : pad(i + 1)}
+                    </span>
+                    <span
+                      className={cx(
+                        'hidden lg:block text-sm leading-snug line-clamp-2',
+                        state === 'current' ? 'text-ink font-medium' : 'text-ink-soft'
+                      )}
+                    >
+                      {s.title}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        </nav>
 
-        <button
-          type="button"
-          onClick={speakCurrentStep}
-          className={`w-9 h-9 rounded-full flex items-center justify-center transition border shadow-xs ${
-            isSpeaking
-              ? 'bg-blue-600 text-white border-blue-600 shadow-md'
-              : 'bg-white text-blue-600 border-slate-200/90 hover:bg-slate-50'
-          }`}
-          aria-label={isSpeaking ? 'Stop narration' : 'Read step aloud'}
-        >
-          {isSpeaking ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-        </button>
-      </div>
-
-      <div className="p-6 sm:p-8 bg-white rounded-3xl border border-slate-200/80 shadow-md space-y-6">
-        <div className="space-y-2">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-full bg-blue-600 text-white font-extrabold text-xs flex items-center justify-center shadow-xs">
-              {activeStepIdx + 1}
-            </div>
-            <span className="text-xs font-bold text-slate-400">
-              Step {activeStepIdx + 1} of {steps.length}
-            </span>
+        {/* Current step */}
+        <Card className="animate-fadeIn" key={idx}>
+          <div className="flex items-center justify-between gap-3">
+            <span className="eyebrow text-accent-700">Step {pad(idx + 1)}</span>
             {currentStep.isAdministratorRequired && (
-              <span className="ml-auto text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                <ShieldAlert className="w-3 h-3" />
-                Admin required
-              </span>
+              <Badge tone="amber">
+                <ShieldAlert className="w-3.5 h-3.5" />
+                {currentStep.actionType === 'terminal_cmd' ? 'Needs sudo' : 'Run as administrator'}
+              </Badge>
             )}
           </div>
 
-          {/* Progress bar */}
-          <div className="flex gap-1" aria-hidden="true">
-            {steps.map((_, idx) => (
-              <span
-                key={idx}
-                className={`h-1 flex-1 rounded-full ${idx <= activeStepIdx ? 'bg-blue-600' : 'bg-slate-200'}`}
-              />
-            ))}
+          <h2 className="mt-3 font-display font-semibold tracking-tight text-3xl sm:text-4xl text-ink leading-tight">{currentStep.title}</h2>
+          {currentStep.description && <p className="mt-3 text-[15px] text-ink-soft leading-relaxed">{currentStep.description}</p>}
+
+          <div className="mt-6 space-y-3">
+            {currentStep.command ? (
+              <div className="rounded-xl bg-ink overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-2 border-b border-white/10">
+                  <span className="flex items-center gap-1.5 eyebrow text-white/50">
+                    <Terminal className="w-3.5 h-3.5" />
+                    {commandLabel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(currentStep.command || '')}
+                    className="flex items-center gap-1 text-xs font-medium text-white/70 hover:text-accent-300 rounded px-1.5 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-accent-300" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <pre className="px-4 py-3.5 text-[13px] leading-relaxed text-accent-300 font-mono whitespace-pre-wrap break-all select-text">
+                  {currentStep.command}
+                </pre>
+              </div>
+            ) : (
+              <Notice icon={<MousePointerClick className="w-4 h-4 text-ink-soft" />}>
+                Do this on your computer, then come back and continue.
+              </Notice>
+            )}
+
+            {currentStep.safetyCaution && (
+              <Notice tone="warning" title="Before you continue">
+                {currentStep.safetyCaution}
+              </Notice>
+            )}
+            {currentStep.expectedOutcome && (
+              <Notice tone="success" title="You should see">
+                {currentStep.expectedOutcome}
+              </Notice>
+            )}
           </div>
 
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight leading-tight pt-2">{currentStep.title}</h1>
-
-          {currentStep.description && (
-            <p className="text-xs sm:text-sm text-slate-600 font-medium leading-relaxed">{currentStep.description}</p>
-          )}
-        </div>
-
-        {isCommand ? (
-          <div className="p-3 bg-slate-900 text-white rounded-2xl border border-slate-800 text-xs font-mono space-y-1.5">
-            <div className="flex items-center justify-between text-[11px] text-slate-400">
-              <span className="text-cyan-400 flex items-center gap-1 font-sans font-bold">
-                <Terminal className="w-3.5 h-3.5" />
-                {currentStep.actionType === 'cmd_command'
-                  ? 'Command Prompt'
-                  : currentStep.actionType === 'terminal_cmd'
-                  ? 'Terminal'
-                  : 'PowerShell'}
-                {currentStep.isAdministratorRequired
-                  ? currentStep.actionType === 'terminal_cmd'
-                    ? ' (needs sudo / admin)'
-                    : ' (Run as administrator)'
-                  : ''}
-              </span>
-              <button
-                type="button"
-                onClick={() => handleCopy(currentStep.command || '')}
-                className="text-slate-300 hover:text-white flex items-center gap-1 font-sans font-semibold transition"
-              >
-                {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                <span>{copied ? 'Copied' : 'Copy'}</span>
-              </button>
-            </div>
-            <div className="text-cyan-300 break-all select-text">{currentStep.command}</div>
+          <div className="mt-8 pt-5 border-t border-hairline flex items-center gap-2">
+            <Button variant="secondary" onClick={() => (idx > 0 ? goTo(idx - 1) : onBack())}>
+              <ArrowLeft className="w-4 h-4" />
+              Back
+            </Button>
+            <Button variant="ghost" onClick={speakCurrentStep}>
+              <RotateCcw className="w-4 h-4" />
+              Repeat
+            </Button>
+            <Button
+              className="ml-auto"
+              variant={isLast ? 'accent' : 'primary'}
+              onClick={() => {
+                soundManager.playSoundEffect('step');
+                if (isLast) onComplete();
+                else goTo(idx + 1);
+              }}
+            >
+              {isLast ? 'I’m done' : 'Next step'}
+              <ArrowRight className="w-4 h-4" />
+            </Button>
           </div>
-        ) : (
-          <div className="p-4 bg-blue-50/60 rounded-2xl border border-blue-100 flex items-start gap-3 text-xs text-slate-700">
-            <MousePointerClick className="w-5 h-5 text-blue-600 shrink-0" />
-            <span className="font-medium leading-relaxed">
-              Do this on your computer, then come back and tap <strong>Next Step</strong>.
-            </span>
-          </div>
-        )}
-
-        {currentStep.safetyCaution && (
-          <div role="note" className="p-3 bg-amber-50 rounded-2xl border border-amber-200 flex items-start gap-2 text-xs text-amber-800">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span className="font-medium leading-relaxed">{currentStep.safetyCaution}</span>
-          </div>
-        )}
-
-        {currentStep.expectedOutcome && (
-          <div className="p-3 bg-emerald-50/70 rounded-2xl border border-emerald-100 flex items-start gap-2 text-xs text-emerald-800">
-            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-            <span className="font-medium leading-relaxed">
-              <strong>You should see:</strong> {currentStep.expectedOutcome}
-            </span>
-          </div>
-        )}
-
-        <div className="flex items-center gap-3 pt-2">
-          <button
-            type="button"
-            onClick={() => {
-              soundManager.playSoundEffect('click');
-              speakCurrentStep();
-            }}
-            className="flex-1 py-3.5 px-4 bg-white hover:bg-slate-50 border border-slate-200/90 text-slate-800 rounded-full text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 transition active:scale-98 shadow-xs"
-          >
-            <RotateCcw className="w-4 h-4 text-slate-600" />
-            <span>Repeat</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleNext}
-            className="flex-1 py-3.5 px-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-700 hover:to-blue-600 text-white rounded-full text-xs sm:text-sm font-extrabold shadow-lg shadow-blue-500/25 flex items-center justify-center gap-2 transition active:scale-98 cursor-pointer"
-          >
-            <span>{activeStepIdx < steps.length - 1 ? 'Next Step' : 'Done'}</span>
-            <ArrowRight className="w-4 h-4" />
-          </button>
-        </div>
+        </Card>
       </div>
-    </div>
+    </Page>
   );
 }

@@ -3,11 +3,9 @@
 
 class SoundFeedbackEngine {
   private audioCtx: AudioContext | null = null;
-  private currentUtterance: SpeechSynthesisUtterance | null = null;
   private isUnlocked = false;
   private voiceCache: SpeechSynthesisVoice | null = null;
   private onSpeakingChangeCallbacks: Set<(isSpeaking: boolean) => void> = new Set();
-  private watchdogTimer: any = null;
   private enabled = true;
 
   constructor() {
@@ -20,9 +18,9 @@ class SoundFeedbackEngine {
 
       // Load voices when available
       if ('speechSynthesis' in window) {
-        window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.addEventListener('voiceschanged', () => {
           this.loadBestVoice();
-        };
+        });
         this.loadBestVoice();
       }
 
@@ -119,6 +117,7 @@ class SoundFeedbackEngine {
   }
 
   private notifySpeakingState(speaking: boolean) {
+    this.speakingNow = speaking;
     this.onSpeakingChangeCallbacks.forEach((cb) => {
       try {
         cb(speaking);
@@ -221,98 +220,338 @@ class SoundFeedbackEngine {
     }
   }
 
-  // Speak technician guidance aloud with anti-GC protection and voice optimization
-  public speak(text: string, options?: { rate?: number; pitch?: number; onEnd?: () => void }): void {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window) || !this.enabled) return;
-    if (!text || text.trim() === '') return;
+  // ------------------------------------------------------------------ speech
 
+  /** Increments on every speak()/stop() so callbacks from cancelled speech are ignored. */
+  private session = 0;
+  private activeUtterances: SpeechSynthesisUtterance[] = [];
+  private lastError: string | null = null;
+
+  /** Splits text into short chunks (by "..." beats and sentences) so long speech never hits
+   *  Chrome's ~15s cutoff and each beat gets a natural pause. */
+  private chunkText(text: string): string[] {
+    const clean = text
+      .replace(/`{1,3}[^`]*`{1,3}/g, '') // markdown code
+      .replace(/[*_~#]/g, '') // markdown formatting
+      .replace(/\s+/g, ' ')
+      .trim();
+    const beats = clean.split(/\s*(?:\.\.\.|…)\s*/).map((b) => b.trim()).filter(Boolean);
+    const chunks: string[] = [];
+    for (const beat of beats) {
+      if (beat.length <= 180) {
+        chunks.push(beat);
+        continue;
+      }
+      // Split long beats on sentence boundaries, then hard-wrap if still too long.
+      let current = '';
+      const sentences = beat.match(/[^.!?]+[.!?]*\s*/g) || [beat];
+      for (const raw of sentences) {
+        const sentence = raw.trim();
+        if ((current + ' ' + sentence).trim().length > 180 && current) {
+          chunks.push(current.trim());
+          current = sentence;
+        } else {
+          current = `${current} ${sentence}`;
+        }
+      }
+      if (current.trim()) chunks.push(current.trim());
+    }
+    return chunks;
+  }
+
+  /** Waits (briefly) for the browser to load its voice list — it's empty on first page load. */
+  private waitForVoices(timeoutMs = 1200): Promise<void> {
+    return new Promise((resolve) => {
+      const synth = window.speechSynthesis;
+      if (synth.getVoices().length > 0) return resolve();
+      const done = () => {
+        synth.removeEventListener('voiceschanged', done);
+        resolve();
+      };
+      synth.addEventListener('voiceschanged', done);
+      setTimeout(done, timeoutMs);
+    });
+  }
+
+  /** Speech support info for the UI (e.g. to explain "no voices installed" on Linux). */
+  public getSpeechStatus(): { supported: boolean; voiceCount: number; lastError: string | null } {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      return { supported: false, voiceCount: 0, lastError: this.lastError };
+    }
+    return { supported: true, voiceCount: window.speechSynthesis.getVoices().length, lastError: this.lastError };
+  }
+
+  // ---- Natural cloud voice (Gemini TTS via /api/tts) ----
+  private audioEl: HTMLAudioElement | null = null;
+  private audioCache = new Map<string, string>(); // text -> object URL
+  private cloudDownUntil = 0;
+  private pending = false; // speech requested but not yet audible (e.g. fetching audio)
+  private speakingNow = false;
+
+  /** True while FixLens is talking or about to talk. Use to avoid interrupting it. */
+  public isBusy(): boolean {
+    return this.pending || this.speakingNow;
+  }
+
+  private getAudioEl(): HTMLAudioElement {
+    if (!this.audioEl) {
+      this.audioEl = new Audio();
+      this.audioEl.preload = 'auto';
+    }
+    return this.audioEl;
+  }
+
+  /** Resolves the currently playing clip's promise (so a halted sequence stops waiting). */
+  private playResolve: (() => void) | null = null;
+  private ttsInflight = new Map<string, Promise<string | null>>();
+
+  private haltPlayback(): void {
+    if (this.audioEl) {
+      this.audioEl.onplay = null;
+      this.audioEl.onended = null;
+      this.audioEl.onerror = null;
+      try {
+        this.audioEl.pause();
+      } catch {
+        // ignore
+      }
+    }
+    this.playResolve?.();
+    this.playResolve = null;
     try {
-      this.unlockAudio();
-
-      // Cancel previous speech and resume engine
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.resume();
-
-      if (this.watchdogTimer) {
-        clearTimeout(this.watchdogTimer);
-        this.watchdogTimer = null;
-      }
-
-      const cleanText = text
-        .replace(/`{1,3}[^`]*`{1,3}/g, '') // remove markdown code blocks
-        .replace(/[*_~#]/g, '')            // remove markdown formatting
-        .trim();
-
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.rate = options?.rate ?? 1.05;
-      utterance.pitch = options?.pitch ?? 1.0;
-
-      // Ensure voice is assigned
-      const voice = this.voiceCache || this.loadBestVoice();
-      if (voice) {
-        utterance.voice = voice;
-      }
-
-      // CRITICAL CHROME BUG FIX: Prevent Garbage Collection of utterance object mid-speech
-      this.currentUtterance = utterance;
-      (window as any).__fixlens_active_utterance = utterance;
-
-      utterance.onstart = () => {
-        this.notifySpeakingState(true);
-      };
-
-      const handleSpeechComplete = () => {
-        this.notifySpeakingState(false);
-        this.currentUtterance = null;
-        (window as any).__fixlens_active_utterance = null;
-        if (this.watchdogTimer) {
-          clearTimeout(this.watchdogTimer);
-          this.watchdogTimer = null;
-        }
-        if (options?.onEnd) {
-          options.onEnd();
-        }
-      };
-
-      utterance.onend = handleSpeechComplete;
-      utterance.onerror = (e) => {
-        console.warn('Speech error event:', e);
-        handleSpeechComplete();
-      };
-
-      // Watchdog timer: If speech is longer than 25 seconds or gets stuck in Chrome, unpause
-      const estimatedDurationMs = Math.max(4000, (cleanText.split(' ').length / 2.5) * 1000);
-      this.watchdogTimer = setTimeout(() => {
-        if (window.speechSynthesis.speaking) {
-          window.speechSynthesis.pause();
-          window.speechSynthesis.resume();
-        }
-      }, Math.min(10000, estimatedDurationMs / 2));
-
-      window.speechSynthesis.speak(utterance);
-    } catch (err) {
-      console.warn('Speech execution error:', err);
-      this.notifySpeakingState(false);
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    } catch {
+      // ignore
     }
   }
 
-  // Stop any active speech or audio
+  /** Fetches (or reuses) natural-voice audio for `text`. Resolves null on failure. */
+  private fetchTtsUrl(text: string): Promise<string | null> {
+    const cached = this.audioCache.get(text);
+    if (cached) return Promise.resolve(cached);
+    const inflight = this.ttsInflight.get(text);
+    if (inflight) return inflight;
+
+    const p = (async () => {
+      try {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          this.lastError = `natural voice unavailable (${res.status}${data?.error ? `: ${data.error}` : ''})`;
+          console.warn('[FixLens voice]', this.lastError);
+          if (res.status !== 429) this.cloudDownUntil = Date.now() + 60_000; // retry in a minute
+          return null;
+        }
+        const url = URL.createObjectURL(await res.blob());
+        this.audioCache.set(text, url);
+        if (this.audioCache.size > 40) {
+          const oldest = this.audioCache.keys().next().value as string;
+          const oldUrl = this.audioCache.get(oldest);
+          if (oldUrl) URL.revokeObjectURL(oldUrl);
+          this.audioCache.delete(oldest);
+        }
+        return url;
+      } catch (err: any) {
+        this.lastError = `natural voice failed: ${err?.message || err}`;
+        return null;
+      } finally {
+        this.ttsInflight.delete(text);
+      }
+    })();
+    this.ttsInflight.set(text, p);
+    return p;
+  }
+
+  /** Plays one clip; resolves when it ends, errors, or playback is halted. Rejects if play() is blocked. */
+  private playUrl(url: string, mySession: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const el = this.getAudioEl();
+      const finish = () => {
+        if (this.playResolve === finish) this.playResolve = null;
+        resolve();
+      };
+      this.playResolve = finish;
+      el.onplay = () => {
+        if (mySession !== this.session) return;
+        this.pending = false;
+        this.lastError = null;
+        if (!this.speakingNow) this.notifySpeakingState(true);
+      };
+      el.onended = finish;
+      el.onerror = finish;
+      el.src = url;
+      el.play().catch((err) => {
+        if (this.playResolve === finish) this.playResolve = null;
+        reject(err);
+      });
+    });
+  }
+
+  /**
+   * Speaks with the natural server voice. The first beat is generated separately so speech starts
+   * sooner while the rest loads in parallel. Returns false if the first clip couldn't play (caller falls back).
+   */
+  private async speakCloud(
+    chunks: string[],
+    mySession: number,
+    deadline: number,
+    options?: { onEnd?: () => void }
+  ): Promise<boolean> {
+    const segments = [chunks[0], chunks.slice(1).join(' ... ')].filter(Boolean);
+    const urls = segments.map((s) => this.fetchTtsUrl(s)); // fetch all in parallel
+
+    try {
+      for (let i = 0; i < segments.length; i++) {
+        const url = await urls[i];
+        if (mySession !== this.session) return true; // superseded — say nothing
+        if (!url) {
+          if (i === 0) return false; // fall back to the browser voice
+          break; // later part failed; stop quietly rather than switching voices mid-sentence
+        }
+        if (i === 0 && deadline && Date.now() > deadline) {
+          // Too late to be useful (e.g. a live tip about a screen that has moved on) — skip it.
+          this.pending = false;
+          return true;
+        }
+        await this.playUrl(url, mySession);
+        if (mySession !== this.session) return true;
+      }
+      this.pending = false;
+      this.notifySpeakingState(false);
+      options?.onEnd?.();
+      return true;
+    } catch (err: any) {
+      // NotAllowedError = autoplay blocked before any user interaction.
+      this.lastError = `natural voice failed: ${err?.name || err?.message || err}`;
+      console.warn('[FixLens voice]', this.lastError);
+      return false;
+    }
+  }
+
+  /**
+   * Speak technician guidance aloud: natural cloud voice first, browser voice as a fallback.
+   * expireMs: if speech can't start within this time, skip it (for time-sensitive live tips).
+   */
+  public speak(
+    text: string,
+    options?: { rate?: number; pitch?: number; onEnd?: () => void; expireMs?: number }
+  ): void {
+    if (typeof window === 'undefined' || !this.enabled) return;
+    const chunks = this.chunkText(text || '');
+    if (chunks.length === 0) return;
+
+    const mySession = ++this.session;
+    const deadline = options?.expireMs ? Date.now() + options.expireMs : 0;
+    this.unlockAudio();
+    this.haltPlayback();
+    if (this.speakingNow) this.notifySpeakingState(false);
+    this.pending = true;
+
+    void (async () => {
+      if (Date.now() >= this.cloudDownUntil) {
+        const ok = await this.speakCloud(chunks, mySession, deadline, options);
+        if (ok || mySession !== this.session) return;
+      }
+      if (mySession !== this.session) return;
+      if (deadline && Date.now() > deadline) {
+        this.pending = false;
+        return;
+      }
+      this.speakBrowser(chunks, mySession, options);
+    })();
+  }
+
+  /** Browser speechSynthesis fallback (quality depends on the voices installed on the OS). */
+  private speakBrowser(
+    chunks: string[],
+    mySession: number,
+    options?: { rate?: number; pitch?: number; onEnd?: () => void }
+  ): void {
+    if (!('speechSynthesis' in window)) {
+      this.pending = false;
+      return;
+    }
+    const synth = window.speechSynthesis;
+
+    const start = async () => {
+      await this.waitForVoices();
+      if (mySession !== this.session) return; // superseded by newer speech or stop()
+      if (synth.getVoices().length === 0) {
+        this.lastError = this.lastError || 'no system voices installed';
+      }
+
+      const voice = this.voiceCache || this.loadBestVoice();
+      this.activeUtterances = [];
+
+      chunks.forEach((chunk, idx) => {
+        const u = new SpeechSynthesisUtterance(chunk);
+        u.rate = options?.rate ?? 1.0;
+        u.pitch = options?.pitch ?? 1.0;
+        u.lang = voice?.lang || 'en-US';
+        if (voice) u.voice = voice;
+
+        if (idx === 0) {
+          u.onstart = () => {
+            if (mySession === this.session) {
+              this.pending = false;
+              this.notifySpeakingState(true);
+            }
+          };
+        }
+        if (idx === chunks.length - 1) {
+          u.onend = () => {
+            if (mySession !== this.session) return;
+            this.activeUtterances = [];
+            this.notifySpeakingState(false);
+            options?.onEnd?.();
+          };
+        }
+        u.onerror = (e: SpeechSynthesisErrorEvent) => {
+          // "interrupted"/"canceled" are normal when new speech replaces old speech.
+          if (e.error === 'interrupted' || e.error === 'canceled') return;
+          console.warn('Speech error:', e.error);
+          this.lastError = `browser voice error: ${e.error || 'unknown'}`;
+          if (mySession === this.session) {
+            this.pending = false;
+            this.activeUtterances = [];
+            this.notifySpeakingState(false);
+          }
+        };
+
+        // Keep references so Chrome doesn't garbage-collect utterances mid-speech.
+        this.activeUtterances.push(u);
+        synth.speak(u);
+      });
+
+      // Some engines start paused after a cancel; make sure we're running.
+      try {
+        synth.resume();
+      } catch {
+        // ignore
+      }
+
+      // If the engine never starts (e.g. no voices on Linux), don't stay "busy" forever.
+      setTimeout(() => {
+        if (mySession === this.session && !this.speakingNow) this.pending = false;
+      }, 3000);
+    };
+
+    // Chrome can silently drop speech that starts right after cancel(); wait a moment.
+    setTimeout(start, 80);
+  }
+
+  // Stop any active speech
   public stop(): void {
     if (typeof window === 'undefined') return;
-    try {
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-      this.notifySpeakingState(false);
-      this.currentUtterance = null;
-      (window as any).__fixlens_active_utterance = null;
-      if (this.watchdogTimer) {
-        clearTimeout(this.watchdogTimer);
-        this.watchdogTimer = null;
-      }
-    } catch (e) {
-      console.warn('Sound stop error:', e);
-    }
+    this.session++;
+    this.haltPlayback();
+    this.pending = false;
+    this.activeUtterances = [];
+    this.notifySpeakingState(false);
   }
 
   // Test sound: plays recognition chime + speaks test confirmation

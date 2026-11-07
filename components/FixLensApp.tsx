@@ -2,8 +2,6 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import WebNavbar from '@/components/WebNavbar';
-import SplashScreen from '@/components/screens/SplashScreen';
-import OnboardingScreen from '@/components/screens/OnboardingScreen';
 import HomeScreen from '@/components/screens/HomeScreen';
 import ScannerScreen from '@/components/screens/ScannerScreen';
 import DiagnosisScreen from '@/components/screens/DiagnosisScreen';
@@ -16,8 +14,6 @@ import AskFixLensModal from '@/components/AskFixLensModal';
 import { DiagnosisReport } from '@/types/technician';
 
 export type ScreenType =
-  | 'splash'
-  | 'onboarding'
   | 'home'
   | 'scanner'
   | 'diagnosis'
@@ -87,6 +83,7 @@ export default function FixLensApp() {
     setCurrentScreen('scanner');
   };
 
+  // Must stay referentially stable: the scanner's live loop depends on it.
   const handleAnalyzed = useCallback(
     (report: DiagnosisReport, options?: { autoNavigate?: boolean }) => {
       setActiveReport(report);
@@ -97,39 +94,22 @@ export default function FixLensApp() {
   );
 
   return (
-    <div className="min-h-screen bg-[#f5f8fc] flex flex-col text-slate-900 antialiased selection:bg-blue-600 selection:text-white">
+    <div className="min-h-screen bg-paper flex flex-col text-ink antialiased">
       <WebNavbar
         currentScreen={currentScreen}
         onNavigate={(screen) => (screen === 'scanner' ? openScanner() : setCurrentScreen(screen))}
         onOpenVoiceModal={() => setShowAskFixLensModal(true)}
-        onOpenCompanionModal={() => setShowCompanionModal(true)}
         hasActiveReport={!!activeReport}
       />
 
+      {/* The page footer (SiteInfo) carries the extra bottom padding for the mobile tab bar */}
       <main id="app" className="flex-1 w-full flex flex-col">
-        {currentScreen === 'splash' && (
-          <div className="flex-1 flex items-center justify-center p-4">
-            <div className="w-full max-w-sm bg-white rounded-2xl overflow-hidden shadow-xl">
-              <SplashScreen onNext={() => setCurrentScreen('onboarding')} />
-            </div>
-          </div>
-        )}
-
-        {currentScreen === 'onboarding' && (
-          <div className="flex-1 flex items-center justify-center p-4">
-            <div className="w-full max-w-sm bg-white rounded-2xl overflow-hidden shadow-xl">
-              <OnboardingScreen onGetStarted={() => setCurrentScreen('home')} />
-            </div>
-          </div>
-        )}
-
         {currentScreen === 'home' && (
           <HomeScreen
             onStartScanning={() => openScanner()}
             onSelectQuickHelp={(issue) => openScanner(issue)}
             onUploadImage={(dataUrl) => openScanner(null, dataUrl)}
             onOpenVoiceModal={() => setShowAskFixLensModal(true)}
-            onOpenCompanion={() => setShowCompanionModal(true)}
           />
         )}
 
@@ -139,6 +119,10 @@ export default function FixLensApp() {
             initialImage={pendingImage}
             onClose={() => setCurrentScreen('home')}
             onAnalyzed={handleAnalyzed}
+            onResolved={(report) => {
+              markResolved(report, true);
+              setCurrentScreen('history');
+            }}
           />
         )}
 
@@ -162,18 +146,17 @@ export default function FixLensApp() {
 
         {currentScreen === 'verification' && (
           <VerificationScreen
-            problemSummary={activeReport?.problemSummary}
+            report={activeReport}
             onBack={() => setCurrentScreen('fixguide')}
             onConfirmFixed={() => {
               if (activeReport) markResolved(activeReport, true);
-              setCurrentScreen('history');
             }}
             onNotFixed={() => {
               if (activeReport) markResolved(activeReport, false);
               openScanner();
             }}
             onAskQuestion={() => setShowAskFixLensModal(true)}
-            onViewDetails={() => setCurrentScreen('diagnosis')}
+            onDone={() => setCurrentScreen('history')}
           />
         )}
 

@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateContentWithFallback } from '@/lib/gemini';
+import { aiErrorResponseInit, generateContentWithFallback } from '@/lib/gemini';
 import { rateLimit } from '@/lib/rate-limit';
 import { personaForJson } from '@/lib/prompts';
+import { parseModelJson } from '@/lib/api-utils';
+
+// AI calls can take several seconds; allow up to 60s on serverless hosts (e.g. Vercel).
+export const maxDuration = 60;
 
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const MAX_BASE64_LENGTH = 10 * 1024 * 1024; // ~7.5 MB decoded
@@ -11,7 +15,8 @@ function clip(value: unknown, max: number): string {
 }
 
 export async function POST(req: NextRequest) {
-  const limited = rateLimit(req, 'realtime-solve', 20, 60_000);
+  // Live guidance checks the screen every few seconds, so allow ~1 request / 2 s per user.
+  const limited = rateLimit(req, 'realtime-solve', 30, 60_000);
   if (!limited.ok) {
     return NextResponse.json(
       { error: 'Too many scans. Please wait a moment and try again.' },
@@ -49,6 +54,53 @@ export async function POST(req: NextRequest) {
     };
     const stepNumber = Number.isFinite(Number(currentStepNumber)) ? Number(currentStepNumber) : 1;
     const spoken = clip(userSpokenInput, 500);
+    const quick = body?.mode === 'quick';
+    const image = { inlineData: { mimeType, data: cleanBase64 } };
+
+    // ---- Guide mode: the user is working through a fix; only check progress on the current step. ----
+    const rawGuide = body?.guide;
+    if (rawGuide && typeof rawGuide === 'object') {
+      const guide = {
+        problem: clip(rawGuide.problem, 200),
+        os: clip(rawGuide.os, 60),
+        stepNumber: Number(rawGuide.stepNumber) || 1,
+        totalSteps: Number(rawGuide.totalSteps) || 1,
+        stepTitle: clip(rawGuide.stepTitle, 200),
+        stepInstruction: clip(rawGuide.stepInstruction, 500),
+        expectedOutcome: clip(rawGuide.expectedOutcome, 300),
+        lastTip: clip(rawGuide.lastTip, 300),
+      };
+
+      const progressPrompt = `
+You are watching the user's screen live while they fix a problem with your guidance.
+
+FIX IN PROGRESS (from the app, JSON):
+${JSON.stringify(guide)}
+
+Look at the current screen and decide:
+- stepProgress:
+  "NOT_STARTED" — nothing on screen shows they've begun this step,
+  "IN_PROGRESS" — they're partway (e.g. the right window is open but the action isn't finished),
+  "STEP_DONE" — the screen clearly shows this step's expected outcome,
+  "RESOLVED" — the original problem is clearly gone (error dialog closed and the thing works),
+  "NEW_ERROR" — a different error appeared,
+  "UNCLEAR" — you can't see enough to tell.
+- liveGuidance: ONE short spoken beat (max ~20 words, one action) about exactly what to do right now based on what you can see, using a natural connector, e.g. "Ok, I can see Settings is open. ... Go ahead and click Network and internet on the left." If nothing has changed and the last tip still applies, return an empty string. Never repeat lastTip word for word. Only describe what is genuinely visible.
+- newErrorText: if stepProgress is NEW_ERROR, the exact visible error text, else "".
+- confidence: 0.0-1.0 for your stepProgress judgement.
+
+RETURN STRICT JSON:
+{ "stepProgress": "...", "liveGuidance": "...", "newErrorText": "", "confidence": 0.0,
+  "boundingBoxHint": { "label": "Where to look", "topPercent": 0, "leftPercent": 0, "widthPercent": 0, "heightPercent": 0 } | null }
+`;
+      const response = await generateContentWithFallback({
+        contents: [image, { text: progressPrompt }],
+        systemInstruction: personaForJson(),
+        responseMimeType: 'application/json',
+        preferFast: true,
+      });
+      return NextResponse.json({ success: true, progress: parseModelJson(response.text) });
+    }
 
     const promptText = `
 Look at this screen capture or camera frame of a computer screen.
@@ -65,7 +117,7 @@ WHAT TO DO:
    - No error visible → screenState "NO_ERROR_DETECTED" and describe what is on screen.
    - Too blurry, cropped, glare, or not enough to be sure → screenState "UNCLEAR", and use realtimeSpokenGuidance to ask the user to show the specific window, move closer, or paste the exact error text. Leave causes and steps empty.
 3. Name the affected component or app (e.g. WLAN AutoConfig 'wlansvc', CUPS, NetworkManager, Wi-Fi in macOS System Settings). Mark it as an inference if it isn't written on screen.
-4. realtimeSpokenGuidance: 1-2 short spoken sentences, natural and calm, no markdown. Say what you see, then the ONE next thing to try, and ask them to tell you what happens.
+4. realtimeSpokenGuidance: 1-2 short spoken beats following the voice delivery rules. Say what you see and, in friend terms, what it means (simple cause → effect). Do NOT give the fix steps here — the app reads each step's spokenInstruction next.
 5. observedSymptoms: 2-4 things actually visible on screen.
 6. possibleCauses: 2-3 causes based strictly on the evidence, each with a likelihood. Label inferences as inferences.
 7. troubleshootingSteps: 2-4 sequential steps for the detected OS (shown one at a time in the app). Only include a command when genuinely needed and you are certain it exists for that OS. Prefer safe, non-destructive actions. Mark administrator/sudo rights and add a safetyCaution for anything risky (recommend a backup before destructive actions). If the problem looks like hardware failure or malware with data at risk, say so and recommend a professional as the step.
@@ -93,7 +145,8 @@ RETURN STRICT JSON:
     {
       "stepNumber": 1,
       "title": "Short title",
-      "description": "Clear action instruction",
+      "description": "Clear written action instruction (shown on screen)",
+      "spokenInstruction": "The same step as it would be said out loud: short beats, one action per sentence, separated by ' ... ', plain words, jargon explained in the same breath, ending by asking them to tell you what happens. No markdown, no reading out the command character by character.",
       "command": "Exact command for the detected OS (PowerShell, CMD, Terminal/shell) or null",
       "actionType": "gui_action" | "powershell_cmd" | "cmd_command" | "terminal_cmd" | "hardware_check" | "reboot_check",
       "isAdministratorRequired": boolean (admin / sudo needed),
@@ -108,23 +161,19 @@ RETURN STRICT JSON:
 `;
 
     const response = await generateContentWithFallback({
-      contents: [{ inlineData: { mimeType, data: cleanBase64 } }, { text: promptText }],
+      contents: [image, { text: promptText }],
       systemInstruction: personaForJson(),
       responseMimeType: 'application/json',
+      preferFast: quick,
     });
 
-    const rawText = response.text?.trim() || '{}';
-    let parsed: any;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-      parsed = JSON.parse(cleaned);
-    }
+    const parsed = parseModelJson(response.text);
 
     return NextResponse.json({ success: true, analysis: parsed });
   } catch (error: any) {
     console.error('Real-time video solve error:', error);
+    const known = aiErrorResponseInit(error);
+    if (known) return NextResponse.json({ error: known.message }, { status: known.status });
     return NextResponse.json(
       { error: 'Screen analysis failed. Please try again.' },
       { status: 500 }

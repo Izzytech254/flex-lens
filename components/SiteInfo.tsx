@@ -6,68 +6,71 @@ export default function SiteInfo() {
   const year = new Date().getFullYear();
 
   return (
-    <div className="w-full bg-white border-t border-slate-200/80">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-12 space-y-12 text-slate-700">
-        <section aria-labelledby="how-it-works" className="space-y-4">
-          <h2 id="how-it-works" className="text-xl font-extrabold text-slate-900">
-            How FixLens fixes computer errors
-          </h2>
-          <ol className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
-            <li className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
-              <strong className="block text-slate-900 mb-1">1. Show the error</strong>
-              Point your phone or webcam at the error on your screen, or upload a screenshot.
-            </li>
-            <li className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
-              <strong className="block text-slate-900 mb-1">2. Understand it</strong>
-              FixLens reads the error code, names the affected Windows component and explains the likely causes in plain English.
-            </li>
-            <li className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
-              <strong className="block text-slate-900 mb-1">3. Fix it step by step</strong>
-              Follow numbered steps with voice narration, exact PowerShell commands and safety notes.
-            </li>
-          </ol>
-        </section>
-
-        <section aria-labelledby="supported-errors" className="space-y-4">
-          <h2 id="supported-errors" className="text-xl font-extrabold text-slate-900">
-            Common errors FixLens can diagnose
-          </h2>
-          <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+    <div className="w-full bg-paper-deep/60 border-t border-hairline">
+      <div className="max-w-5xl mx-auto px-6 pt-20 pb-28 md:pb-16 text-ink">
+        <section aria-labelledby="supported-errors" className="grid gap-10 lg:grid-cols-[1fr_1.4fr] lg:gap-16">
+          <div>
+            <p className="eyebrow text-accent-700">What it knows</p>
+            <h2 id="supported-errors" className="mt-3 font-display font-semibold tracking-tight text-4xl sm:text-5xl leading-[1.05] tracking-tight">
+              Common errors FixLens can diagnose
+            </h2>
+            <p className="mt-4 text-[15px] text-ink-soft leading-relaxed">
+              Blue screens, macOS alerts, Linux terminal errors, installer failures and many more. If it can&apos;t read something
+              clearly, it asks you to show it more instead of guessing.
+            </p>
+          </div>
+          <ul className="border-t border-ink/15">
             {siteConfig.supportedErrors.map((e) => (
-              <li key={e.code} className="flex items-start gap-2">
-                <code className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded shrink-0">
-                  {e.code}
-                </code>
-                <span>{e.name}</span>
+              <li key={e.code} className="py-3.5 border-b border-ink/15 flex items-baseline gap-4">
+                <code className="font-mono text-xs text-accent-700 w-44 shrink-0 truncate">{e.code}</code>
+                <span className="text-[15px] text-ink">{e.name}</span>
               </li>
             ))}
           </ul>
-          <p className="text-sm">
-            FixLens also recognises blue screen (BSOD) stop codes, macOS alerts, Linux terminal errors, installer failures and many
-            other problems shown on screen — and if it can&apos;t read something clearly, it asks you to show it more.
-          </p>
         </section>
 
-        <section aria-labelledby="faq" className="space-y-3">
-          <h2 id="faq" className="text-xl font-extrabold text-slate-900">
-            Frequently asked questions
-          </h2>
-          {siteConfig.faqs.map((f) => (
-            <details key={f.q} className="group p-4 rounded-2xl bg-slate-50 border border-slate-100">
-              <summary className="cursor-pointer font-bold text-slate-900 text-sm">{f.q}</summary>
-              <p className="mt-2 text-sm leading-relaxed">{f.a}</p>
-            </details>
-          ))}
+        <section aria-labelledby="faq" className="mt-24 grid gap-10 lg:grid-cols-[1fr_1.4fr] lg:gap-16">
+          <div>
+            <p className="eyebrow text-accent-700">Questions</p>
+            <h2 id="faq" className="mt-3 font-display font-semibold tracking-tight text-4xl sm:text-5xl leading-[1.05] tracking-tight">
+              Frequently asked
+            </h2>
+          </div>
+          <div className="border-t border-ink/15">
+            {siteConfig.faqs.map((f) => (
+              <details key={f.q} className="group border-b border-ink/15">
+                <summary className="cursor-pointer list-none py-5 flex items-center justify-between gap-4 font-display font-semibold tracking-tight text-lg text-ink rounded-sm">
+                  {f.q}
+                  <span
+                    aria-hidden="true"
+                    className="shrink-0 w-7 h-7 rounded-full border border-hairline flex items-center justify-center text-ink-soft text-lg leading-none transition-transform group-open:rotate-45"
+                  >
+                    +
+                  </span>
+                </summary>
+                <p className="pb-5 -mt-1 text-[15px] text-ink-soft leading-relaxed max-w-2xl">{f.a}</p>
+              </details>
+            ))}
+          </div>
         </section>
 
-        <footer className="pt-6 border-t border-slate-100 text-xs text-slate-500 flex flex-col sm:flex-row gap-2 justify-between">
+        <footer className="mt-24 pt-6 border-t border-ink/15 flex flex-col sm:flex-row gap-3 justify-between text-sm text-ink-soft">
           <span>
-            © {year} {siteConfig.name} — {siteConfig.shortDescription} Powered by Google Gemini.
+            <span className="font-display font-semibold tracking-tight text-lg text-ink">
+              Fix<span className="text-accent-500">Lens</span>
+            </span>{' '}
+            · © {year} · {siteConfig.shortDescription}
           </span>
-          <nav aria-label="Footer" className="flex gap-4">
-            <a href="#app" className="hover:text-slate-800">Open the app</a>
-            <a href="/llms.txt" className="hover:text-slate-800">llms.txt</a>
-            <a href="/sitemap.xml" className="hover:text-slate-800">Sitemap</a>
+          <nav aria-label="Footer" className="flex gap-5">
+            <a href="#app" className="hover:text-ink">
+              Open the app
+            </a>
+            <a href="/llms.txt" className="hover:text-ink">
+              llms.txt
+            </a>
+            <a href="/sitemap.xml" className="hover:text-ink">
+              Sitemap
+            </a>
           </nav>
         </footer>
       </div>

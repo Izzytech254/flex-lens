@@ -1,17 +1,49 @@
 @import "tailwindcss";
 
+/*
+ * FixLens design tokens — "Workbench" identity.
+ * Graphite ink on warm bone paper, one signature accent (signal vermilion, like repair tags
+ * and tool handles) and moss green for "fixed". Deliberately avoids the purple/indigo/cyan
+ * palette common to AI products.
+ */
 @theme {
   --font-sans: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: var(--font-heading), var(--font-sans), -apple-system, "Segoe UI", sans-serif;
   --font-mono: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-  /* Used across screens as animate-fadeIn / animate-slideUp (previously undefined) */
-  --animate-fadeIn: fadeIn 0.3s ease-out both;
+  /* Graphite & bone */
+  --color-ink: #15171c;
+  --color-ink-2: #2a2e36;
+  --color-ink-soft: #545a65;
+  --color-paper: #f4f1eb;
+  --color-paper-deep: #e9e4d9;
+  --color-hairline: #dbd4c6;
+
+  /* Signal vermilion (brand accent) */
+  --color-accent-100: #fbe6dc;
+  --color-accent-300: #f4a988;
+  --color-accent-400: #ee7c52;
+  --color-accent-500: #e5582a;
+  --color-accent-600: #c6441b;
+  --color-accent-700: #983415;
+
+  /* Moss (success / fixed) */
+  --color-moss-100: #e1ece4;
+  --color-moss-500: #2f6b4f;
+  --color-moss-700: #1f4a36;
+
+  --animate-fadeIn: fadeIn 0.35s ease-out both;
   --animate-slideUp: slideUp 0.3s ease-out both;
+  --animate-float: float 3s ease-in-out infinite;
+  --animate-scanline: scanline 1.6s ease-in-out infinite;
+  --animate-blink: blink 1s steps(2, start) infinite;
+  --animate-wave: wave 0.9s ease-in-out infinite;
+  --animate-pop: pop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
 
   @keyframes fadeIn {
     from {
       opacity: 0;
-      transform: translateY(4px);
+      transform: translateY(6px);
     }
     to {
       opacity: 1;
@@ -29,6 +61,108 @@
       transform: translateY(0);
     }
   }
+
+  @keyframes float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-6px);
+    }
+  }
+
+  /* Scan line sweeping down the phone viewfinder */
+  @keyframes scanline {
+    0% {
+      top: 8%;
+      opacity: 0;
+    }
+    15% {
+      opacity: 1;
+    }
+    85% {
+      opacity: 1;
+    }
+    100% {
+      top: 88%;
+      opacity: 0;
+    }
+  }
+
+  @keyframes blink {
+    to {
+      visibility: hidden;
+    }
+  }
+
+  /* Voice waveform bars */
+  @keyframes wave {
+    0%,
+    100% {
+      transform: scaleY(0.35);
+    }
+    50% {
+      transform: scaleY(1);
+    }
+  }
+
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: scale(0.85);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+}
+
+/* Cutting-mat grid (the technician's workbench): major squares with fainter minor lines */
+@utility mat-grid {
+  background-image:
+    linear-gradient(rgba(21, 23, 28, 0.075) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(21, 23, 28, 0.075) 1px, transparent 1px),
+    linear-gradient(rgba(21, 23, 28, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(21, 23, 28, 0.035) 1px, transparent 1px);
+  background-size:
+    96px 96px,
+    96px 96px,
+    24px 24px,
+    24px 24px;
+  background-position: -1px -1px;
+}
+
+/* Ruler tick marks: small ticks every 12px, tall ticks every 96px (aligned with the mat grid) */
+@utility ruler-ticks {
+  background-image:
+    repeating-linear-gradient(90deg, rgba(21, 23, 28, 0.28) 0 1px, transparent 1px 12px),
+    repeating-linear-gradient(90deg, rgba(21, 23, 28, 0.45) 0 1px, transparent 1px 48px),
+    repeating-linear-gradient(90deg, rgba(229, 88, 42, 0.9) 0 1.5px, transparent 1.5px 96px);
+  background-size:
+    100% 6px,
+    100% 10px,
+    100% 16px;
+  background-repeat: repeat-x;
+  background-position:
+    -1px 100%,
+    -1px 100%,
+    -1px 100%;
+}
+
+/* Subtle paper grain so large flat areas don't look digital */
+@utility grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.08 0 0 0 0 0.09 0 0 0 0 0.11 0 0 0 0.5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+}
+
+/* Small monospace label, e.g. "02 — Diagnosis" */
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 @utility scrollbar-none {
@@ -48,18 +182,31 @@
   }
 }
 
-/* Crisp light scrollbars */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+  a:focus-visible,
+  summary:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid var(--color-accent-500);
+    outline-offset: 2px;
+  }
+}
+
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #d3cbbb;
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #b5ab97;
 }

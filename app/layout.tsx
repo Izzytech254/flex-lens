@@ -1,11 +1,19 @@
 import type { Metadata, Viewport } from 'next';
-import { Plus_Jakarta_Sans, JetBrains_Mono } from 'next/font/google';
+import { Inter_Tight, Schibsted_Grotesk, JetBrains_Mono } from 'next/font/google';
 import { siteConfig } from '@/lib/site';
 import './globals.css';
 
-const sansFont = Plus_Jakarta_Sans({
+// "Workbench" type: Schibsted Grotesk for headlines, Inter Tight for interface text,
+// JetBrains Mono for labels and error codes.
+const sansFont = Inter_Tight({
   subsets: ['latin'],
   variable: '--font-sans',
+  display: 'swap',
+});
+
+const displayFont = Schibsted_Grotesk({
+  subsets: ['latin'],
+  variable: '--font-heading',
   display: 'swap',
 });
 
@@ -69,7 +77,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#2563eb',
+  themeColor: '#15171c',
 };
 
 const jsonLd = {
@@ -118,7 +126,7 @@ const jsonLd = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${sansFont.variable} ${monoFont.variable}`}>
+    <html lang="en" className={`${sansFont.variable} ${displayFont.variable} ${monoFont.variable}`}>
       <head>
         <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM-readable summary" />
         <script
@@ -127,7 +135,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, '\\u003c') }}
         />
       </head>
-      <body className="bg-[#f5f8fc] text-slate-900 min-h-screen font-sans antialiased selection:bg-blue-600 selection:text-white">
+      <body className="bg-paper text-ink min-h-screen font-sans antialiased selection:bg-accent-300 selection:text-ink">
         {children}
       </body>
     </html>

@@ -21,6 +21,8 @@ export interface TroubleshootingStep {
   title: string;
   description: string;
   simpleExplanation: string;
+  /** Voice-style version of the step (short spoken beats), used for narration */
+  spokenInstruction?: string;
   actionType: 'gui_action' | 'powershell_cmd' | 'cmd_command' | 'terminal_cmd' | 'hardware_check' | 'reboot_check';
   command?: string;
   isAdministratorRequired?: boolean;

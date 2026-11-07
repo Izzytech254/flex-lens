@@ -5,6 +5,8 @@ import { rateLimit } from '@/lib/rate-limit';
 import { clip, InputError, parseImage, parseModelJson } from '@/lib/api-utils';
 import { personaForJson } from '@/lib/prompts';
 
+export const maxDuration = 60;
+
 const STATUSES = new Set(['RESOLVED', 'PARTIALLY_RESOLVED', 'UNRESOLVED', 'NEW_ERROR_APPEARED']);
 
 export async function POST(req: NextRequest) {
