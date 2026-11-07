@@ -24,9 +24,11 @@ class SoundFeedbackEngine {
         this.loadBestVoice();
       }
 
-      // Automatically unlock audio on first user touch/click anywhere on page
+      // Automatically unlock audio on first user touch/click anywhere on page. This must run inside a
+      // real user gesture: browsers (especially iOS Safari) only allow later audio playback after that.
       const unlockHandler = () => {
         this.unlockAudio();
+        this.unlockMediaElement();
         window.removeEventListener('pointerdown', unlockHandler);
         window.removeEventListener('keydown', unlockHandler);
       };
@@ -291,6 +293,28 @@ class SoundFeedbackEngine {
   /** True while FixLens is talking or about to talk. Use to avoid interrupting it. */
   public isBusy(): boolean {
     return this.pending || this.speakingNow;
+  }
+
+  private mediaUnlocked = false;
+
+  /**
+   * Plays a silent clip on the shared <audio> element during the user's first gesture, so the
+   * natural-voice clips (which start after a network request, outside any gesture) are allowed to play.
+   */
+  private unlockMediaElement(): void {
+    if (this.mediaUnlocked) return;
+    this.mediaUnlocked = true;
+    try {
+      const el = this.getAudioEl();
+      if (!el.src) {
+        el.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+        el.play()?.catch(() => {
+          // Ignore: some browsers reject the empty clip; the gesture still counts as user activation.
+        });
+      }
+    } catch {
+      // ignore
+    }
   }
 
   private getAudioEl(): HTMLAudioElement {

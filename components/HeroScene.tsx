@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { cx } from '@/components/ui';
+import { CreditedImage, HERO_PHOTOS, commonsImageUrl } from '@/lib/image-credits';
 
 /**
  * Animated hero illustration: a computer shows an error, a phone running FixLens scans it,
@@ -280,6 +281,51 @@ function OsTag({ children, className }: { children: React.ReactNode; className?:
   );
 }
 
+/** A real photo of an error screen, styled like a printed snapshot pinned behind the demo. */
+function PhotoCard({
+  photo,
+  className,
+  tilt,
+  floatClass,
+  tagSide,
+}: {
+  photo: CreditedImage;
+  className: string;
+  tilt: string;
+  floatClass: string;
+  tagSide: 'left' | 'right';
+}) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null; // if the image can't load, just leave the space empty
+
+  return (
+    <div className={cx('absolute z-0', className)}>
+      <div className={cx(tilt, 'animate-float', floatClass)}>
+        <figure className="relative rounded-lg bg-white p-1.5 sm:p-2 shadow-[0_22px_40px_-16px_rgba(21,23,28,0.45)]">
+          <div className="overflow-hidden rounded-[4px] bg-ink" style={{ aspectRatio: String(photo.ratio) }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={commonsImageUrl(photo.file, 640)}
+              srcSet={`${commonsImageUrl(photo.file, 480)} 480w, ${commonsImageUrl(photo.file, 800)} 800w`}
+              sizes="(min-width: 1024px) 280px, 40vw"
+              alt={photo.alt}
+              loading="lazy"
+              decoding="async"
+              referrerPolicy="no-referrer"
+              onError={() => setFailed(true)}
+              className="h-full w-full object-cover saturate-[0.85] contrast-[1.05]"
+            />
+          </div>
+          <OsTag className={cx('-top-2.5', tagSide === 'left' ? 'left-3' : 'right-3')}>{photo.os}</OsTag>
+          <figcaption className="sr-only">
+            {photo.alt}. Photo by {photo.author}, {photo.license}, via Wikimedia Commons.
+          </figcaption>
+        </figure>
+      </div>
+    </div>
+  );
+}
+
 function PhoneSheet({ phase }: { phase: Phase }) {
   // Bottom sheet content inside the phone UI, per phase.
   return (
@@ -360,23 +406,28 @@ export default function HeroScene({ className }: { className?: string }) {
       aria-label="Animation: a computer shows a Wi-Fi error, a phone running FixLens scans it, guides the fix step by step with voice, and the computer reconnects."
     >
       <div className="relative aspect-[6/5]">
-        {/* Background: the same kind of problem on other operating systems (FixLens handles all three) */}
-        <div aria-hidden="true" className="absolute left-[-9%] top-[-11%] w-[50%] z-0">
-          <div className="rotate-[-7deg] animate-float [animation-duration:6s] [animation-delay:-1.5s]">
-            <div className="relative opacity-90 drop-shadow-[0_18px_30px_rgba(21,23,28,0.28)]">
-              <LinuxTerminalWindow />
-              <OsTag className="-top-2.5 left-3">Linux</OsTag>
-            </div>
-          </div>
-        </div>
-        <div aria-hidden="true" className="absolute right-[-7%] top-[-4%] w-[44%] z-0">
-          <div className="rotate-[6deg] animate-float [animation-duration:7s] [animation-delay:-3s]">
-            <div className="relative opacity-95 drop-shadow-[0_18px_30px_rgba(21,23,28,0.22)]">
-              <MacAlertWindow />
-              <OsTag className="-top-2.5 right-3">macOS</OsTag>
-            </div>
-          </div>
-        </div>
+        {/* Background: real photos of the same kind of problem on Linux, macOS and Windows */}
+        <PhotoCard
+          photo={HERO_PHOTOS[0]}
+          className="left-[-10%] top-[-12%] w-[46%]"
+          tilt="rotate-[-7deg]"
+          floatClass="[animation-duration:6s] [animation-delay:-1.5s]"
+          tagSide="left"
+        />
+        <PhotoCard
+          photo={HERO_PHOTOS[1]}
+          className="right-[-8%] top-[-6%] w-[42%]"
+          tilt="rotate-[6deg]"
+          floatClass="[animation-duration:7s] [animation-delay:-3s]"
+          tagSide="right"
+        />
+        <PhotoCard
+          photo={HERO_PHOTOS[2]}
+          className="left-[-6%] bottom-[2%] w-[34%] hidden sm:block"
+          tilt="rotate-[-4deg]"
+          floatClass="[animation-duration:8s] [animation-delay:-5s]"
+          tagSide="left"
+        />
 
         {/* Computer (Windows) */}
         <div className="absolute left-0 top-[3%] w-[84%] z-10">

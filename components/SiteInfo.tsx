@@ -1,4 +1,5 @@
 import { siteConfig } from '@/lib/site';
+import { HERO_PHOTOS, commonsPageUrl } from '@/lib/image-credits';
 
 // Server-rendered, crawlable content describing FixLens. Search engines and AI
 // assistants read this HTML directly (the interactive app above is client-side).
@@ -73,6 +74,24 @@ export default function SiteInfo() {
             </a>
           </nav>
         </footer>
+
+        {/* Attribution required by the photo licences (Creative Commons) */}
+        <p className="mt-4 text-xs text-ink-soft/80 leading-relaxed">
+          Photo credits (via Wikimedia Commons):{' '}
+          {HERO_PHOTOS.map((p, i) => (
+            <span key={p.id}>
+              <a href={commonsPageUrl(p.file)} target="_blank" rel="noopener noreferrer" className="underline decoration-hairline hover:text-ink">
+                {p.os} error photo
+              </a>{' '}
+              by {p.author},{' '}
+              <a href={p.licenseUrl} target="_blank" rel="noopener noreferrer license" className="underline decoration-hairline hover:text-ink">
+                {p.license}
+              </a>
+              {i < HERO_PHOTOS.length - 1 ? '; ' : '.'}
+            </span>
+          ))}{' '}
+          Photos are resized and recoloured slightly.
+        </p>
       </div>
     </div>
   );

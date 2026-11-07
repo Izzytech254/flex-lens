@@ -27,6 +27,8 @@ const nextConfig: NextConfig = {
     ];
   },
   output: 'standalone',
+  // Load the Edge TTS client (uses WebSockets) from node_modules at runtime instead of bundling it.
+  serverExternalPackages: ['msedge-tts'],
   // Pin the project root so a stray lockfile in a parent folder (e.g. ~/pnpm-lock.yaml)
   // doesn't make Next.js trace files from the wrong directory.
   outputFileTracingRoot: process.cwd(),

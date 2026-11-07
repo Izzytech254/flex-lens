@@ -2,10 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { aiErrorResponseInit, generateSpeech } from '@/lib/gemini';
 import { rateLimit } from '@/lib/rate-limit';
 import { readJsonBody } from '@/lib/api-utils';
+import { elevenLabsConfigured, elevenLabsSpeech } from '@/lib/tts-elevenlabs';
+import { googleCloudSpeech, googleTtsConfigured } from '@/lib/tts-google';
+import { edgeSpeech, edgeTtsEnabled } from '@/lib/tts-edge';
 
 export const maxDuration = 60;
 
 // Natural-sounding voice for FixLens guidance (works on every OS, unlike browser voices).
+// Provider order: Edge neural voices (free) → Google Cloud TTS (if GOOGLE_TTS_API_KEY) →
+// ElevenLabs (if ELEVENLABS_API_KEY) → Gemini TTS → (client falls back to the browser voice).
 // Change with GEMINI_TTS_VOICE (e.g. Kore, Puck, Charon, Aoede).
 const VOICE = process.env.GEMINI_TTS_VOICE || 'Kore';
 const MAX_CHARS = 1500;
@@ -38,12 +43,54 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const failures: string[] = [];
   try {
     const body = (await readJsonBody(req)) ?? {};
     const text = typeof body.text === 'string' ? body.text.replace(/\s+/g, ' ').trim().slice(0, MAX_CHARS) : '';
     if (!text) return NextResponse.json({ error: 'Text is required.' }, { status: 400 });
 
-    // A short style direction makes the voice sound like a calm human technician.
+    // 1) Free: Microsoft Edge neural voices (no key, no billing).
+    if (edgeTtsEnabled()) {
+      try {
+        const mp3 = await edgeSpeech(text);
+        return new NextResponse(new Uint8Array(mp3), {
+          headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=3600', 'X-TTS-Provider': 'edge' },
+        });
+      } catch (err: any) {
+        failures.push(`Edge TTS: ${err?.message || String(err)}`);
+        console.warn('[tts] Edge TTS failed, trying next provider:', err?.message || err);
+      }
+    }
+
+    // 2) Google Cloud Text-to-Speech (only when GOOGLE_TTS_API_KEY is set).
+    if (googleTtsConfigured()) {
+      try {
+        const mp3 = await googleCloudSpeech(text);
+        return new NextResponse(new Uint8Array(mp3), {
+          headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=3600', 'X-TTS-Provider': 'google-cloud' },
+        });
+      } catch (err: any) {
+        failures.push(err?.message || String(err));
+        console.warn('[tts] Google Cloud TTS failed, trying next provider:', err?.message || err);
+      }
+    }
+
+    // 3) ElevenLabs (when configured). On failure, fall through to Gemini.
+    let elevenLabsError: string | null = null;
+    if (elevenLabsConfigured()) {
+      try {
+        const mp3 = await elevenLabsSpeech(text);
+        return new NextResponse(new Uint8Array(mp3), {
+          headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=3600', 'X-TTS-Provider': 'elevenlabs' },
+        });
+      } catch (err: any) {
+        elevenLabsError = err?.message || String(err);
+        failures.push(elevenLabsError || 'ElevenLabs failed');
+        console.warn('[tts] ElevenLabs failed, falling back to Gemini:', elevenLabsError);
+      }
+    }
+
+    // 4) Gemini TTS. A short style direction makes the voice sound like a calm human technician.
     const prompt = `Say in a calm, warm, friendly voice, like a helpful technician sitting next to a friend, pausing briefly at each "...": ${text}`;
     const { data, mimeType } = await generateSpeech(prompt, VOICE);
     const audio = Buffer.from(data, 'base64');
@@ -62,7 +109,10 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('TTS error:', error);
     const known = aiErrorResponseInit(error);
-    if (known) return NextResponse.json({ error: known.message }, { status: known.status });
-    return NextResponse.json({ error: 'Voice generation failed.' }, { status: 500 });
+    // In development, show why each earlier provider failed too.
+    const prefix =
+      process.env.NODE_ENV !== 'production' && failures.length > 0 ? `[Earlier providers failed: ${failures.join(' | ')}] ` : '';
+    if (known) return NextResponse.json({ error: prefix + known.message }, { status: known.status });
+    return NextResponse.json({ error: prefix + 'Voice generation failed.' }, { status: 500 });
   }
 }
