@@ -17,9 +17,9 @@ interface HomeScreenProps {
   onStartScanning: () => void;
   onSelectQuickHelp: (issue: 'wifi' | 'printer' | 'update') => void;
   onOpenVoiceModal: () => void;
-  onChangeTab?: (tab: 'home' | 'history' | 'settings') => void;
   onOpenCompanion: () => void;
-  onUploadImage?: (file: File) => void;
+  /** Receives the uploaded screenshot as a data URL */
+  onUploadImage: (dataUrl: string) => void;
 }
 
 export default function HomeScreen({
@@ -33,11 +33,14 @@ export default function HomeScreen({
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && onUploadImage) {
-      onUploadImage(file);
-    } else if (file) {
-      onStartScanning();
-    }
+    e.target.value = '';
+    if (!file || !file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result;
+      if (typeof dataUrl === 'string') onUploadImage(dataUrl);
+    };
+    reader.readAsDataURL(file);
   };
 
   return (
@@ -45,10 +48,10 @@ export default function HomeScreen({
       {/* Hero Section matching FixLens showcase */}
       <div className="space-y-3">
         <h1 className="text-3xl sm:text-5xl font-black tracking-tight text-slate-900 leading-tight">
-          Hello!
+          Fix Windows errors with your camera
         </h1>
         <p className="text-base sm:text-xl font-bold text-slate-600">
-          Ready to solve your computer problem?
+          Point FixLens at any error message and get a plain-English fix, step by step.
         </p>
       </div>
 
@@ -176,7 +179,10 @@ export default function HomeScreen({
           </div>
           <div>
             <h4 className="text-xs font-bold text-slate-900">
-              Windows Companion PC Agent
+              Windows Companion PC Agent{' '}
+              <span className="ml-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                Preview
+              </span>
             </h4>
             <span className="text-[11px] font-mono font-semibold text-slate-400">
               Pairing Code: FXL-8821

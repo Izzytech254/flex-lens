@@ -1,5 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { CompanionRepairAction, CompanionSystemStats } from '@/types/technician';
+import { rateLimit } from '@/lib/rate-limit';
+
+// NOTE: The companion is currently a DEMO. Repair actions are simulated on the server and
+// never executed on a real PC. Do not wire real execution until pairing uses per-device
+// secrets and approval is verified on the PC side.
+const PAIRING_CODE_RE = /^[A-Z0-9-]{4,16}$/;
+const MAX_SESSIONS = 500;
+const TELEMETRY_KEYS: Array<keyof CompanionSystemStats> = [
+  'computerName', 'osVersion', 'architecture', 'uptimeHours', 'cpuUsagePercent', 'ramUsagePercent',
+  'diskFreeGb', 'networkInterface', 'ipAddress', 'internetReachable', 'pendingUpdatesCount',
+  'spoolerStatus', 'wlanStatus',
+];
+
+function sanitizeTelemetry(input: unknown): Partial<CompanionSystemStats> {
+  if (!input || typeof input !== 'object') return {};
+  const out: Record<string, unknown> = {};
+  for (const key of TELEMETRY_KEYS) {
+    const v = (input as Record<string, unknown>)[key];
+    if (typeof v === 'string') out[key] = v.slice(0, 200);
+    else if (typeof v === 'number' && Number.isFinite(v)) out[key] = v;
+    else if (typeof v === 'boolean') out[key] = v;
+  }
+  return out as Partial<CompanionSystemStats>;
+}
 
 // In-memory registry of companion sessions (keyed by pairingCode)
 interface CompanionSession {
@@ -101,6 +125,9 @@ const ALLOWLISTED_COMMANDS: Record<string, { cmd: string; requiresAdmin: boolean
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const code = (searchParams.get('code') || DEFAULT_SESSION_CODE).toUpperCase();
+  if (!PAIRING_CODE_RE.test(code)) {
+    return NextResponse.json({ success: false, error: 'Invalid pairing code' }, { status: 400 });
+  }
 
   const session = sessions.get(code);
   if (!session) {
@@ -112,6 +139,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     success: true,
+    simulated: true,
     session: {
       pairingCode: session.pairingCode,
       computerName: session.computerName,
@@ -133,21 +161,31 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const limited = rateLimit(req, 'companion', 60, 60_000);
+  if (!limited.ok) {
+    return NextResponse.json(
+      { error: 'Too many requests.' },
+      { status: 429, headers: { 'Retry-After': String(limited.retryAfterSec) } }
+    );
+  }
+
   try {
     const body = await req.json();
-    const { action, code = DEFAULT_SESSION_CODE, actionId, userApproved, customTelemetry } = body;
+    const { action, code = DEFAULT_SESSION_CODE, actionId, userApproved } = body ?? {};
+    const customTelemetry = sanitizeTelemetry(body?.customTelemetry);
 
-    const normalizedCode = code.toUpperCase();
+    const normalizedCode = typeof code === 'string' ? code.toUpperCase() : '';
+    if (!PAIRING_CODE_RE.test(normalizedCode)) {
+      return NextResponse.json({ error: 'Invalid pairing code.' }, { status: 400 });
+    }
     let session = sessions.get(normalizedCode);
 
     if (!session) {
+      if (sessions.size >= MAX_SESSIONS) {
+        return NextResponse.json({ error: 'Companion capacity reached. Try again later.' }, { status: 503 });
+      }
       // Auto-register session if new
-      session = {
-        pairingCode: normalizedCode,
-        computerName: customTelemetry?.computerName || 'WINDOWS-PC-' + normalizedCode.slice(-4),
-        connectedAt: new Date().toISOString(),
-        lastHeartbeat: new Date().toISOString(),
-        stats: customTelemetry?.stats || {
+      const baseStats: CompanionSystemStats = {
           computerName: 'WINDOWS-PC-' + normalizedCode.slice(-4),
           osVersion: 'Microsoft Windows 11 (Connected Companion)',
           architecture: '64-bit x64',
@@ -161,7 +199,14 @@ export async function POST(req: NextRequest) {
           pendingUpdatesCount: 0,
           spoolerStatus: 'Running',
           wlanStatus: 'Connected',
-        },
+      };
+      const stats: CompanionSystemStats = { ...baseStats, ...customTelemetry };
+      session = {
+        pairingCode: normalizedCode,
+        computerName: stats.computerName,
+        connectedAt: new Date().toISOString(),
+        lastHeartbeat: new Date().toISOString(),
+        stats,
         pendingActions: [],
         executionHistory: [],
       };
@@ -177,7 +222,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'update_telemetry') {
-      if (customTelemetry) {
+      if (Object.keys(customTelemetry).length > 0) {
         session.stats = { ...session.stats, ...customTelemetry };
         session.lastHeartbeat = new Date().toISOString();
       }
@@ -185,7 +230,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'execute_action') {
-      const commandSpec = ALLOWLISTED_COMMANDS[actionId];
+      const commandSpec =
+        typeof actionId === 'string' && Object.prototype.hasOwnProperty.call(ALLOWLISTED_COMMANDS, actionId)
+          ? ALLOWLISTED_COMMANDS[actionId]
+          : undefined;
       if (!commandSpec) {
         return NextResponse.json({ error: 'Command is not in allowlisted repair database.' }, { status: 400 });
       }
@@ -238,6 +286,8 @@ export async function POST(req: NextRequest) {
         exitCode = 0;
       }
 
+      outputText = `[DEMO — simulated output, nothing was run on your PC]\n${outputText}`;
+
       session.executionHistory.unshift({
         actionId,
         command: commandSpec.cmd,
@@ -248,6 +298,7 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         success: true,
+        simulated: true,
         actionId,
         output: outputText,
         exitCode,
@@ -258,6 +309,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unknown action specified.' }, { status: 400 });
   } catch (error: any) {
     console.error('Companion API error:', error);
-    return NextResponse.json({ error: error.message || 'Companion request failed.' }, { status: 500 });
+    return NextResponse.json({ error: 'Companion request failed.' }, { status: 500 });
   }
 }

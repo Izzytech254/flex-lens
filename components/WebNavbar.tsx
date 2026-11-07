@@ -12,7 +12,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import AudioWaveIndicator from '@/components/AudioWaveIndicator';
-import { ScreenType } from '@/app/page';
+import type { ScreenType } from '@/components/FixLensApp';
 
 interface WebNavbarProps {
   currentScreen: ScreenType;

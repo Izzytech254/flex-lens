@@ -8,9 +8,16 @@ class SoundFeedbackEngine {
   private voiceCache: SpeechSynthesisVoice | null = null;
   private onSpeakingChangeCallbacks: Set<(isSpeaking: boolean) => void> = new Set();
   private watchdogTimer: any = null;
+  private enabled = true;
 
   constructor() {
     if (typeof window !== 'undefined') {
+      try {
+        this.enabled = window.localStorage.getItem('fixlens_sound_enabled') !== 'false';
+      } catch {
+        // localStorage unavailable (private mode etc.)
+      }
+
       // Load voices when available
       if ('speechSynthesis' in window) {
         window.speechSynthesis.onvoiceschanged = () => {
@@ -88,6 +95,21 @@ class SoundFeedbackEngine {
     return this.voiceCache;
   }
 
+  public isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  // Globally enable/disable sound effects and voice narration (persisted per device)
+  public setEnabled(value: boolean): void {
+    this.enabled = value;
+    if (!value) this.stop();
+    try {
+      window.localStorage.setItem('fixlens_sound_enabled', String(value));
+    } catch {
+      // ignore
+    }
+  }
+
   // Register state listener for active speaking state (for animated sound waves)
   public subscribeSpeaking(callback: (isSpeaking: boolean) => void): () => void {
     this.onSpeakingChangeCallbacks.add(callback);
@@ -108,7 +130,7 @@ class SoundFeedbackEngine {
 
   // Synthesize instant auditory sound effects using Web Audio API oscillators
   public playSoundEffect(type: 'detect' | 'success' | 'alert' | 'step' | 'click' | 'chime'): void {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || !this.enabled) return;
     try {
       this.unlockAudio();
       const ctx = this.audioCtx;
@@ -201,7 +223,7 @@ class SoundFeedbackEngine {
 
   // Speak technician guidance aloud with anti-GC protection and voice optimization
   public speak(text: string, options?: { rate?: number; pitch?: number; onEnd?: () => void }): void {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (typeof window === 'undefined' || !('speechSynthesis' in window) || !this.enabled) return;
     if (!text || text.trim() === '') return;
 
     try {

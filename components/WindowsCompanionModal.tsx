@@ -124,9 +124,15 @@ export default function WindowsCompanionModal({
             type="button"
             onClick={onClose}
             className="text-slate-400 hover:text-white"
+            aria-label="Close companion"
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        <div role="note" className="p-2.5 bg-amber-950/50 border border-amber-800/70 rounded-xl text-[11px] text-amber-200 leading-relaxed">
+          <strong className="text-amber-300">Preview:</strong> repair actions here are simulated for demonstration and are
+          not run on your PC. The PowerShell script only shares read-only system status.
         </div>
 
         {/* Script download */}
@@ -213,7 +219,11 @@ export default function WindowsCompanionModal({
 
         {/* Action output terminal */}
         {actionResult && (
-          <div className="p-2.5 bg-black border border-slate-800 rounded-xl font-mono text-[11px] text-emerald-400 max-h-24 overflow-y-auto">
+          <div
+            className={`p-2.5 bg-black border border-slate-800 rounded-xl font-mono text-[11px] max-h-24 overflow-y-auto whitespace-pre-wrap ${
+              actionResult.status === 'success' ? 'text-emerald-400' : 'text-rose-400'
+            }`}
+          >
             {actionResult.output}
           </div>
         )}

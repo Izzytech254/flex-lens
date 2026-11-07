@@ -7,64 +7,31 @@ import {
   VolumeX,
   RotateCcw,
   ArrowRight,
-  Settings,
   Terminal,
   Copy,
   Check,
+  ShieldAlert,
+  AlertTriangle,
+  CheckCircle2,
+  Camera,
+  MousePointerClick,
 } from 'lucide-react';
-import { DiagnosisReport, TroubleshootingStep } from '@/types/technician';
+import { DiagnosisReport } from '@/types/technician';
 import { soundManager } from '@/lib/sound-feedback';
 
 interface FixGuideScreenProps {
   report: DiagnosisReport | null;
   onBack: () => void;
   onComplete: () => void;
+  onStartScan: () => void;
 }
 
-export default function FixGuideScreen({
-  report,
-  onBack,
-  onComplete,
-}: FixGuideScreenProps) {
-  const steps: TroubleshootingStep[] = report?.troubleshootingSteps || [
-    {
-      stepNumber: 1,
-      title: 'Open Windows Settings',
-      description: 'Click the Start menu and select Settings.',
-      simpleExplanation: 'Click Start and open Settings.',
-      actionType: 'gui_action',
-      expectedOutcome: 'Settings opens',
-      verificationCriteria: 'Settings gear visible',
-      status: 'pending',
-    },
-    {
-      stepNumber: 2,
-      title: 'Restart WLAN Service',
-      description: 'Restart the Windows Wi-Fi network background service.',
-      simpleExplanation: 'Reset Wi-Fi service.',
-      actionType: 'powershell_cmd',
-      command: 'Restart-Service -Name WlanSvc -Force; ipconfig /flushdns',
-      expectedOutcome: 'WLAN service running',
-      verificationCriteria: 'Wi-Fi reconnects',
-      status: 'pending',
-    },
-    {
-      stepNumber: 3,
-      title: 'Verify Internet Connection',
-      description: 'Check whether web pages load properly.',
-      simpleExplanation: 'Check connection.',
-      actionType: 'gui_action',
-      expectedOutcome: 'Connected',
-      verificationCriteria: 'Connection restored',
-      status: 'pending',
-    },
-  ];
+export default function FixGuideScreen({ report, onBack, onComplete, onStartScan }: FixGuideScreenProps) {
+  const steps = report?.troubleshootingSteps || [];
 
   const [activeStepIdx, setActiveStepIdx] = useState<number>(0);
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
-
-  const currentStep = steps[activeStepIdx] || steps[0];
 
   useEffect(() => {
     const unsub = soundManager.subscribeSpeaking(setIsSpeaking);
@@ -74,6 +41,28 @@ export default function FixGuideScreen({
     };
   }, []);
 
+  if (!report || steps.length === 0) {
+    return (
+      <div className="w-full max-w-lg mx-auto px-4 py-16 text-center space-y-4 animate-fadeIn">
+        <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
+          <Camera className="w-7 h-7" />
+        </div>
+        <h1 className="text-xl font-black text-slate-900">No fix steps yet</h1>
+        <p className="text-sm text-slate-600">Scan an error first and FixLens will build a step-by-step guide for it.</p>
+        <button
+          type="button"
+          onClick={onStartScan}
+          className="px-5 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full text-sm font-bold shadow-md"
+        >
+          Start Scanning
+        </button>
+      </div>
+    );
+  }
+
+  const currentStep = steps[Math.min(activeStepIdx, steps.length - 1)];
+  const isCommand = !!currentStep.command;
+
   const speakCurrentStep = () => {
     if (isSpeaking) {
       soundManager.stop();
@@ -81,42 +70,51 @@ export default function FixGuideScreen({
     }
     soundManager.playSoundEffect('step');
     soundManager.speak(
-      `Step ${activeStepIdx + 1} of ${steps.length}: ${currentStep.title}. ${currentStep.description}`
+      `Step ${activeStepIdx + 1} of ${steps.length}: ${currentStep.title}. ${currentStep.description}${
+        currentStep.safetyCaution ? ` Caution: ${currentStep.safetyCaution}` : ''
+      }`
     );
   };
 
   const handleNext = () => {
     soundManager.playSoundEffect('step');
+    setCopied(false);
     if (activeStepIdx < steps.length - 1) {
       setActiveStepIdx(activeStepIdx + 1);
     } else {
-      soundManager.playSoundEffect('success');
       onComplete();
     }
   };
 
-  const handleCopy = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handlePrev = () => {
+    setCopied(false);
+    if (activeStepIdx > 0) setActiveStepIdx(activeStepIdx - 1);
+    else onBack();
+  };
+
+  const handleCopy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
   };
 
   return (
     <div className="w-full max-w-xl mx-auto px-4 py-8 select-none animate-fadeIn space-y-6">
-      {/* Top Header matching Showcase Screen 6 */}
       <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
         <button
           type="button"
-          onClick={onBack}
+          onClick={handlePrev}
           className="w-9 h-9 rounded-full bg-white border border-slate-200/90 shadow-xs flex items-center justify-center text-slate-700 hover:bg-slate-50 transition"
-          title="Back"
+          aria-label={activeStepIdx > 0 ? 'Previous step' : 'Back to diagnosis'}
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
 
-        <h2 className="text-base font-extrabold text-slate-900">
-          Fix Guide
-        </h2>
+        <h2 className="text-base font-extrabold text-slate-900">Fix Guide</h2>
 
         <button
           type="button"
@@ -126,15 +124,13 @@ export default function FixGuideScreen({
               ? 'bg-blue-600 text-white border-blue-600 shadow-md'
               : 'bg-white text-blue-600 border-slate-200/90 hover:bg-slate-50'
           }`}
-          title="Voice narration"
+          aria-label={isSpeaking ? 'Stop narration' : 'Read step aloud'}
         >
           {isSpeaking ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
         </button>
       </div>
 
-      {/* Main Card matching Showcase Screen 6 */}
       <div className="p-6 sm:p-8 bg-white rounded-3xl border border-slate-200/80 shadow-md space-y-6">
-        {/* Step indicator header */}
         <div className="space-y-2">
           <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 rounded-full bg-blue-600 text-white font-extrabold text-xs flex items-center justify-center shadow-xs">
@@ -143,24 +139,38 @@ export default function FixGuideScreen({
             <span className="text-xs font-bold text-slate-400">
               Step {activeStepIdx + 1} of {steps.length}
             </span>
+            {currentStep.isAdministratorRequired && (
+              <span className="ml-auto text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                <ShieldAlert className="w-3 h-3" />
+                Admin required
+              </span>
+            )}
           </div>
 
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight leading-tight">
-            {currentStep.title}
-          </h1>
+          {/* Progress bar */}
+          <div className="flex gap-1" aria-hidden="true">
+            {steps.map((_, idx) => (
+              <span
+                key={idx}
+                className={`h-1 flex-1 rounded-full ${idx <= activeStepIdx ? 'bg-blue-600' : 'bg-slate-200'}`}
+              />
+            ))}
+          </div>
 
-          <p className="text-xs sm:text-sm text-slate-600 font-medium leading-relaxed">
-            {currentStep.description}
-          </p>
+          <h1 className="text-2xl font-black text-slate-900 tracking-tight leading-tight pt-2">{currentStep.title}</h1>
+
+          {currentStep.description && (
+            <p className="text-xs sm:text-sm text-slate-600 font-medium leading-relaxed">{currentStep.description}</p>
+          )}
         </div>
 
-        {/* Optional PowerShell Command box with 1-click copy */}
-        {currentStep.command && (
+        {isCommand ? (
           <div className="p-3 bg-slate-900 text-white rounded-2xl border border-slate-800 text-xs font-mono space-y-1.5">
             <div className="flex items-center justify-between text-[11px] text-slate-400">
               <span className="text-cyan-400 flex items-center gap-1 font-sans font-bold">
                 <Terminal className="w-3.5 h-3.5" />
-                PowerShell Command
+                {currentStep.actionType === 'cmd_command' ? 'Command Prompt' : 'PowerShell'}
+                {currentStep.isAdministratorRequired ? ' (Run as administrator)' : ''}
               </span>
               <button
                 type="button"
@@ -171,59 +181,33 @@ export default function FixGuideScreen({
                 <span>{copied ? 'Copied' : 'Copy'}</span>
               </button>
             </div>
-            <div className="text-cyan-300 break-all select-text">
-              {currentStep.command}
-            </div>
+            <div className="text-cyan-300 break-all select-text">{currentStep.command}</div>
+          </div>
+        ) : (
+          <div className="p-4 bg-blue-50/60 rounded-2xl border border-blue-100 flex items-start gap-3 text-xs text-slate-700">
+            <MousePointerClick className="w-5 h-5 text-blue-600 shrink-0" />
+            <span className="font-medium leading-relaxed">
+              Do this on your computer, then come back and tap <strong>Next Step</strong>.
+            </span>
           </div>
         )}
 
-        {/* Visual Interface Simulation matching Showcase Screen 6 */}
-        <div className="relative aspect-[16/10] sm:aspect-[16/9] w-full rounded-2xl bg-gradient-to-b from-[#1a2332] to-[#0f1724] border border-slate-800 overflow-hidden shadow-inner p-4 flex flex-col justify-between">
-          {/* Windows Start Menu / Dialog Container */}
-          <div className="w-64 bg-[#1e293b]/95 backdrop-blur-md rounded-2xl border border-slate-700/80 p-3 shadow-2xl space-y-3">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-              Windows Apps
+        {currentStep.safetyCaution && (
+          <div role="note" className="p-3 bg-amber-50 rounded-2xl border border-amber-200 flex items-start gap-2 text-xs text-amber-800">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span className="font-medium leading-relaxed">{currentStep.safetyCaution}</span>
+          </div>
+        )}
+
+        {currentStep.expectedOutcome && (
+          <div className="p-3 bg-emerald-50/70 rounded-2xl border border-emerald-100 flex items-start gap-2 text-xs text-emerald-800">
+            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+            <span className="font-medium leading-relaxed">
+              <strong>You should see:</strong> {currentStep.expectedOutcome}
             </span>
-
-            <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-semibold text-slate-300">
-              <div className="p-2 rounded-xl bg-slate-800/80 border border-slate-700/60 flex flex-col items-center gap-1">
-                <div className="w-5 h-5 rounded bg-blue-500/30 text-blue-400 flex items-center justify-center font-bold">W</div>
-                <span>Edge</span>
-              </div>
-              <div className="p-2 rounded-xl bg-slate-800/80 border border-slate-700/60 flex flex-col items-center gap-1">
-                <div className="w-5 h-5 rounded bg-indigo-500/30 text-indigo-400 flex items-center justify-center font-bold">T</div>
-                <span>Terminal</span>
-              </div>
-              <div className="p-2 rounded-xl bg-slate-800/80 border border-slate-700/60 flex flex-col items-center gap-1">
-                <div className="w-5 h-5 rounded bg-emerald-500/30 text-emerald-400 flex items-center justify-center font-bold">F</div>
-                <span>Files</span>
-              </div>
-            </div>
-
-            {/* Highlighted Settings icon with Callout Bubble */}
-            <div className="relative pt-2">
-              <div className="p-2 rounded-xl bg-blue-500/20 border-2 border-blue-400 flex items-center gap-2">
-                <Settings className="w-5 h-5 text-blue-400 animate-spin duration-3000" />
-                <span className="text-xs font-bold text-white">Settings</span>
-              </div>
-
-              {/* Blue Speech Callout Bubble matching Showcase Screen 6 */}
-              <div className="absolute -top-10 left-12 bg-blue-600 text-white text-xs font-extrabold px-3 py-1.5 rounded-xl shadow-2xl border border-blue-400 flex items-center gap-1 animate-bounce whitespace-nowrap">
-                <span>Click Settings</span>
-                <span className="absolute -bottom-1.5 left-6 w-3 h-3 bg-blue-600 rotate-45 border-r border-b border-blue-400" />
-              </div>
-            </div>
           </div>
+        )}
 
-          {/* Windows Taskbar */}
-          <div className="w-full h-7 bg-[#0b111e] rounded-lg border border-slate-800 px-2 flex items-center gap-2">
-            <div className="w-3.5 h-3.5 rounded bg-blue-500" />
-            <div className="w-3 h-3 rounded bg-slate-700" />
-            <div className="w-3 h-3 rounded bg-slate-700" />
-          </div>
-        </div>
-
-        {/* Bottom Button Row matching Showcase Screen 6: [Repeat] and [Next Step →] */}
         <div className="flex items-center gap-3 pt-2">
           <button
             type="button"

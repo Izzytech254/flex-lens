@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Volume2,
   ShieldCheck,
@@ -11,7 +11,6 @@ import {
 import { soundManager } from '@/lib/sound-feedback';
 
 interface SettingsScreenProps {
-  onChangeTab?: (tab: 'home' | 'history' | 'settings') => void;
   onOpenCompanionModal: () => void;
 }
 
@@ -21,7 +20,16 @@ export default function SettingsScreen({
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [testStatus, setTestStatus] = useState<string | null>(null);
 
+  useEffect(() => {
+    setSoundEnabled(soundManager.isEnabled());
+  }, []);
+
   const handleTestAudio = () => {
+    if (!soundManager.isEnabled()) {
+      setTestStatus('Sound is off');
+      setTimeout(() => setTestStatus(null), 2000);
+      return;
+    }
     setTestStatus('Playing...');
     soundManager.playSoundEffect('detect');
     setTimeout(() => {
@@ -47,20 +55,21 @@ export default function SettingsScreen({
               <Volume2 className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900">Voice Narration</h3>
-              <p className="text-[11px] text-slate-500">Read instructions aloud automatically</p>
+              <h3 className="text-sm font-bold text-slate-900">Voice &amp; Sounds</h3>
+              <p className="text-[11px] text-slate-500">Spoken guidance and sound effects (saved on this device)</p>
             </div>
           </div>
 
           <button
             type="button"
+            role="switch"
+            aria-checked={soundEnabled}
+            aria-label="Voice narration and sounds"
             onClick={() => {
-              if (soundEnabled) {
-                soundManager.stop();
-              } else {
-                soundManager.playSoundEffect('click');
-              }
-              setSoundEnabled(!soundEnabled);
+              const next = !soundEnabled;
+              soundManager.setEnabled(next);
+              if (next) soundManager.playSoundEffect('click');
+              setSoundEnabled(next);
             }}
             className={`w-12 h-6 rounded-full transition p-0.5 cursor-pointer ${
               soundEnabled ? 'bg-blue-600' : 'bg-slate-300'
@@ -97,8 +106,13 @@ export default function SettingsScreen({
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900">PC Companion</h3>
-              <p className="text-[11px] font-mono text-slate-500 font-semibold">Pairing: FXL-8821</p>
+              <h3 className="text-sm font-bold text-slate-900">
+                PC Companion{' '}
+                <span className="ml-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                  Preview
+                </span>
+              </h3>
+              <p className="text-[11px] font-mono text-slate-500 font-semibold">Demo pairing: FXL-8821</p>
             </div>
           </div>
 
@@ -128,10 +142,10 @@ export default function SettingsScreen({
       <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/60 flex items-center justify-between text-xs text-slate-600">
         <span className="flex items-center gap-2 font-bold text-slate-700">
           <Cpu className="w-4 h-4 text-blue-600" />
-          Gemini Multimodal Vision
+          Diagnosis engine
         </span>
-        <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-          Operational
+        <span className="text-[10px] font-bold text-slate-600 bg-white px-2 py-0.5 rounded-full border border-slate-200">
+          Powered by Google Gemini
         </span>
       </div>
     </div>

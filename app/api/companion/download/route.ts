@@ -1,15 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { siteConfig } from '@/lib/site';
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const code = (searchParams.get('code') || 'FXL-8821').toUpperCase();
-  const host = req.headers.get('host') || 'localhost:3000';
-  const protocol = host.includes('localhost') ? 'http' : 'https';
-  const baseUrl = `${protocol}://${host}`;
+  if (!/^[A-Z0-9-]{4,16}$/.test(code)) {
+    return NextResponse.json({ error: 'Invalid pairing code.' }, { status: 400 });
+  }
+  // Prefer the configured public URL so a spoofed Host header cannot redirect the script.
+  let baseUrl = siteConfig.url;
+  if (baseUrl.startsWith('http://localhost')) {
+    const host = req.headers.get('host') || 'localhost:3000';
+    if (/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host)) baseUrl = `http://${host}`;
+  }
 
   const ps1Script = `# =====================================================================
-# FixLens Windows Companion Agent (Production Edition)
+# FixLens Windows Companion Agent (Preview)
 # Version: 1.4.0
+# This preview only sends read-only system telemetry to FixLens.
+# It does NOT download or execute any commands on this PC.
 # Pairing Code: ${code}
 # Server Endpoint: ${baseUrl}/api/companion
 # =====================================================================

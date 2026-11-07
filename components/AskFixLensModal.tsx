@@ -13,6 +13,7 @@ import {
   Bot,
 } from 'lucide-react';
 import { DiagnosisReport } from '@/types/technician';
+import { soundManager } from '@/lib/sound-feedback';
 
 interface AskFixLensModalProps {
   onClose: () => void;
@@ -34,12 +35,10 @@ export default function AskFixLensModal({ onClose, report }: AskFixLensModalProp
   const recognitionRef = useRef<any>(null);
   const handleSendRef = useRef<(txt?: string) => void>(() => {});
 
+  // Uses the shared sound manager so the global Voice & Sounds setting is respected.
   const speak = (txt: string) => {
-    if (isMuted || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    const utt = new SpeechSynthesisUtterance(txt);
-    utt.rate = 1.05;
-    window.speechSynthesis.speak(utt);
+    if (isMuted) return;
+    soundManager.speak(txt);
   };
 
   const handleSend = async (queryText?: string) => {
@@ -62,14 +61,14 @@ export default function AskFixLensModal({ onClose, report }: AskFixLensModalProp
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (data.success && data.reply) {
         setMessages((prev) => [...prev, { sender: 'bot', text: data.reply }]);
         speak(data.reply);
       } else {
         setMessages((prev) => [
           ...prev,
-          { sender: 'bot', text: 'I am here to help. What error or symptom are you seeing?' },
+          { sender: 'bot', text: data.error || 'Sorry, I could not answer that. Please try again.' },
         ]);
       }
     } catch (e) {
@@ -146,9 +145,10 @@ export default function AskFixLensModal({ onClose, report }: AskFixLensModalProp
             <button
               type="button"
               onClick={() => {
-                if (!isMuted) window.speechSynthesis?.cancel();
+                if (!isMuted) soundManager.stop();
                 setIsMuted(!isMuted);
               }}
+              aria-label={isMuted ? 'Unmute replies' : 'Mute replies'}
               className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg"
             >
               {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4 text-blue-600" />}
@@ -207,6 +207,8 @@ export default function AskFixLensModal({ onClose, report }: AskFixLensModalProp
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
+            maxLength={1000}
+            aria-label="Your question"
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
             placeholder={isListening ? 'Listening...' : 'Type a computer question...'}
             className="flex-1 bg-white border border-slate-200 rounded-full px-4 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 transition"

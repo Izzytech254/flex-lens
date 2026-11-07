@@ -8,18 +8,28 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
-  // Allow access to remote image placeholder.
-  images: {
-    remotePatterns: [
+  poweredByHeader: false,
+  async headers() {
+    return [
       {
-        protocol: 'https',
-        hostname: 'picsum.photos',
-        port: '',
-        pathname: '/**', // This allows any path under the hostname
+        source: '/:path*',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'Permissions-Policy', value: 'camera=(self), microphone=(self), geolocation=()' },
+        ],
       },
-    ],
+      {
+        // Keep API endpoints out of search indexes
+        source: '/api/:path*',
+        headers: [{ key: 'X-Robots-Tag', value: 'noindex' }],
+      },
+    ];
   },
   output: 'standalone',
+  // Pin the project root so a stray lockfile in a parent folder (e.g. ~/pnpm-lock.yaml)
+  // doesn't make Next.js trace files from the wrong directory.
+  outputFileTracingRoot: process.cwd(),
   transpilePackages: ['motion'],
   webpack: (config, {dev}) => {
     // HMR is disabled in AI Studio via DISABLE_HMR env var.

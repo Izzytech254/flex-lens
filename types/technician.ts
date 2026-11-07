@@ -47,6 +47,10 @@ export interface DiagnosisReport {
   troubleshootingSteps: TroubleshootingStep[];
   citations: TechnicalCitation[];
   confidence: ConfidenceRating;
+  /** Model-reported confidence between 0 and 1, when available */
+  confidenceScore?: number;
+  /** Set when the user confirms (true) or denies (false) that the fix worked */
+  resolved?: boolean;
   capturedImage?: string;
   mode: 'camera_visual' | 'connected_companion';
 }
