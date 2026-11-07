@@ -48,7 +48,11 @@ const PRESET_SCENARIO_IDS: Record<'wifi' | 'printer' | 'update', string> = {
 
 const LIVE_SCAN_INTERVAL_MS = 8000;
 const PROBABILITIES = new Set(['HIGH', 'MEDIUM', 'LOW']);
-const ACTION_TYPES = new Set(['gui_action', 'powershell_cmd', 'cmd_command', 'hardware_check', 'reboot_check']);
+const ACTION_TYPES = new Set(['gui_action', 'powershell_cmd', 'cmd_command', 'terminal_cmd', 'hardware_check', 'reboot_check']);
+
+function defaultCommandType(os: string): TroubleshootingStep['actionType'] {
+  return /mac|linux|ubuntu|debian|fedora|arch/i.test(os) ? 'terminal_cmd' : 'powershell_cmd';
+}
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -85,7 +89,9 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
   const title = str(a.detectedError) || 'Detected error';
   const rawCode = str(a.errorCode);
   const code = rawCode && !/^n\/a$/i.test(rawCode) ? rawCode : '';
-  const component = str(a.affectedComponent) || 'Windows';
+  const rawOs = str(a.detectedOS);
+  const os = rawOs && !/^unknown$/i.test(rawOs) ? rawOs : '';
+  const component = str(a.affectedComponent) || 'Unknown component';
   const score =
     typeof a.confidence === 'number' && Number.isFinite(a.confidence)
       ? Math.min(1, Math.max(0, a.confidence))
@@ -130,7 +136,7 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
         title: str(st?.title) || `Step ${idx + 1}`,
         description,
         simpleExplanation: description,
-        actionType: (ACTION_TYPES.has(type) ? type : command ? 'powershell_cmd' : 'gui_action') as TroubleshootingStep['actionType'],
+        actionType: (ACTION_TYPES.has(type) ? type : command ? defaultCommandType(os) : 'gui_action') as TroubleshootingStep['actionType'],
         command,
         isAdministratorRequired: Boolean(st?.isAdministratorRequired),
         expectedOutcome: str(st?.expectedOutcome),
@@ -148,7 +154,7 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
         title: 'Recommended action',
         description: str(a.currentActionInstruction),
         simpleExplanation: str(a.currentActionInstruction),
-        actionType: validCommand(a.exactCommand) ? 'powershell_cmd' : 'gui_action',
+        actionType: validCommand(a.exactCommand) ? defaultCommandType(os) : 'gui_action',
         command: validCommand(a.exactCommand),
         expectedOutcome: '',
         verificationCriteria: '',
@@ -179,7 +185,7 @@ function buildReport(a: any, id: string, frame: string): DiagnosisReport {
     problemSummary: title,
     detectedErrorCodes: code ? [code] : [],
     affectedComponent: component,
-    systemContext: 'Windows',
+    systemContext: os || 'Unknown OS',
     observedSymptoms: symptoms,
     confirmedFacts: code ? [`Error code visible on screen: ${code}`] : [],
     possibleCauses: causes,
@@ -339,9 +345,25 @@ export default function ScannerScreen({ onClose, onAnalyzed, initialPreset, init
         }
 
         const a = data.analysis;
-        const hasError = a.screenState === 'ERROR_ACTIVE' || (str(a.detectedError) && a.screenState !== 'NO_ERROR_DETECTED');
+        const isUnclear = a.screenState === 'UNCLEAR';
+        const hasError =
+          !isUnclear &&
+          (a.screenState === 'ERROR_ACTIVE' || (str(a.detectedError) && a.screenState !== 'NO_ERROR_DETECTED'));
 
-        if (hasError) {
+        if (isUnclear) {
+          // FixLens can't read the screen well enough — ask instead of guessing.
+          setBoundingBox(null);
+          const ask =
+            str(a.realtimeSpokenGuidance) ||
+            "I can't quite read that. Could you move closer to the error, or upload a screenshot?";
+          if (opts.explicit || opts.frame) {
+            setErrorMessage(ask);
+            if (ask !== lastSpokenTextRef.current) {
+              lastSpokenTextRef.current = ask;
+              speakVoiceFeedback(ask);
+            }
+          }
+        } else if (hasError) {
           const title = str(a.detectedError) || 'Detected error';
           const code = str(a.errorCode);
           const signature = `${title}|${code}`.toLowerCase();

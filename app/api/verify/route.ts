@@ -3,6 +3,7 @@ import { generateContentWithFallback } from '@/lib/gemini';
 import { VerificationResult } from '@/types/technician';
 import { rateLimit } from '@/lib/rate-limit';
 import { clip, InputError, parseImage, parseModelJson } from '@/lib/api-utils';
+import { personaForJson } from '@/lib/prompts';
 
 const STATUSES = new Set(['RESOLVED', 'PARTIALLY_RESOLVED', 'UNRESOLVED', 'NEW_ERROR_APPEARED']);
 
@@ -72,8 +73,9 @@ RETURN VALID JSON:
 
     const response = await generateContentWithFallback({
       contents: contents,
-      systemInstruction:
-        'You are an empirical visual technician. You verify computer repair results by inspecting screen captures. Never claim an issue is resolved when visual evidence shows otherwise.',
+      systemInstruction: personaForJson(
+        'You are verifying whether a fix worked. Never claim the issue is resolved unless the screen clearly shows the symptom is gone; if unsure, mark it UNRESOLVED and ask the user to confirm in recommendedNextStep.'
+      ),
       responseMimeType: 'application/json',
     });
 

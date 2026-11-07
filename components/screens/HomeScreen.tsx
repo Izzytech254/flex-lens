@@ -48,10 +48,10 @@ export default function HomeScreen({
       {/* Hero Section matching FixLens showcase */}
       <div className="space-y-3">
         <h1 className="text-3xl sm:text-5xl font-black tracking-tight text-slate-900 leading-tight">
-          Fix Windows errors with your camera
+          Fix computer errors with your camera
         </h1>
         <p className="text-base sm:text-xl font-bold text-slate-600">
-          Point FixLens at any error message and get a plain-English fix, step by step.
+          Windows, Mac or Linux — point FixLens at the error and it&apos;ll talk you through the fix, one step at a time.
         </p>
       </div>
 

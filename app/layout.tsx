@@ -91,7 +91,7 @@ const jsonLd = {
       description: siteConfig.description,
       applicationCategory: 'UtilitiesApplication',
       applicationSubCategory: 'Computer troubleshooting',
-      operatingSystem: 'Any (web browser); diagnoses Windows 10 and Windows 11',
+      operatingSystem: 'Any (web browser); diagnoses Windows, macOS and Linux',
       browserRequirements: 'Requires a modern browser with JavaScript. Camera optional.',
       isAccessibleForFree: true,
       offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },

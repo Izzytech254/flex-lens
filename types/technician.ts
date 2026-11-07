@@ -21,7 +21,7 @@ export interface TroubleshootingStep {
   title: string;
   description: string;
   simpleExplanation: string;
-  actionType: 'gui_action' | 'powershell_cmd' | 'cmd_command' | 'hardware_check' | 'reboot_check';
+  actionType: 'gui_action' | 'powershell_cmd' | 'cmd_command' | 'terminal_cmd' | 'hardware_check' | 'reboot_check';
   command?: string;
   isAdministratorRequired?: boolean;
   expectedOutcome: string;

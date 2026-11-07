@@ -3,6 +3,7 @@ import { generateContentWithFallback } from '@/lib/gemini';
 import { DiagnosisReport } from '@/types/technician';
 import { rateLimit } from '@/lib/rate-limit';
 import { clip, InputError, parseImage, parseModelJson } from '@/lib/api-utils';
+import { personaForJson } from '@/lib/prompts';
 
 export async function POST(req: NextRequest) {
   const limited = rateLimit(req, 'diagnose', 10, 60_000);
@@ -110,8 +111,9 @@ RETURN VALID JSON matching this exact structure:
 
     const response = await generateContentWithFallback({
       contents: contents,
-      systemInstruction:
-        'You are FixLens, a senior computer technician. You only deliver technically accurate, verified troubleshooting steps for actual Windows PC issues. Never hallucinate fake errors or non-existent commands. Respond strictly with parseable JSON.',
+      systemInstruction: personaForJson(
+        'Identify the OS (Windows, macOS or Linux) from the evidence before giving steps; put it in systemContext, or "Unknown OS" if you cannot tell. If the evidence is unclear, say so in problemSummary and list what you need in missingInformation instead of guessing.'
+      ),
       responseMimeType: 'application/json',
     });
 

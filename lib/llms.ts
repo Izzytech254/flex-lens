@@ -9,7 +9,7 @@ export function buildLlmsTxt(): string {
 
 > ${siteConfig.description}
 
-FixLens is a free web app (no install) that acts as an AI computer technician for Windows 10 and Windows 11 problems. A user points a phone or webcam at an error on their computer screen, or uploads a screenshot. FixLens reads the error, explains it in plain English, lists likely causes, and walks the user through numbered fix steps (with optional voice narration). It is powered by Google Gemini multimodal vision.
+FixLens is a free web app (no install) that acts as an AI computer technician for Windows, macOS and Linux problems. A user points a phone or webcam at an error on their computer screen, or uploads a screenshot. FixLens identifies the operating system, reads the error, explains it in plain English, lists likely causes, and talks the user through the fix one step at a time (with optional voice). It quotes only what is visible, asks for a clearer view instead of guessing, warns before risky changes, and asks the user to confirm a fix worked. It is powered by Google Gemini multimodal vision.
 
 ## Key pages
 - [FixLens app](${u}/): Start scanning a Windows error, upload a screenshot, or ask a question by voice or text.

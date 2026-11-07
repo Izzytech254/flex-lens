@@ -18,15 +18,17 @@ function resolveSiteUrl(): string {
 
 export const siteConfig = {
   name: 'FixLens',
-  title: 'FixLens — AI Computer Technician for Windows Errors',
+  title: 'FixLens — AI Computer Technician for Windows, Mac & Linux Errors',
   shortDescription: 'See it. Understand it. Fix it.',
   description:
-    'FixLens is a free AI computer technician in your browser. Point your camera at a Windows error or upload a screenshot and get a plain-English diagnosis, likely causes and step-by-step fixes for Wi-Fi, printer, Windows Update, blue screen (BSOD) and app crash errors.',
+    'FixLens is a free AI computer technician in your browser. Point your camera at an error on Windows, macOS or Linux, or upload a screenshot, and get a calm, plain-English diagnosis and one-step-at-a-time fixes for Wi-Fi, printer, update, blue screen (BSOD) and app crash problems.',
   url: resolveSiteUrl(),
   locale: 'en_US',
   keywords: [
     'AI computer technician',
     'fix Windows errors',
+    'fix Mac errors',
+    'Linux troubleshooting help',
     'Windows error code lookup',
     'screenshot error diagnosis',
     'AI tech support',
@@ -53,15 +55,15 @@ export const siteConfig = {
   faqs: [
     {
       q: 'What is FixLens?',
-      a: 'FixLens is an AI computer technician that runs in your web browser. It reads Windows error messages from your camera or a screenshot, explains the problem in plain English and guides you through the fix step by step, with optional voice narration.',
+      a: 'FixLens is an AI computer technician that runs in your web browser. It reads error messages on Windows, macOS or Linux from your camera or a screenshot, explains the problem in plain English and talks you through the fix one step at a time, like a calm technician sitting next to you.',
     },
     {
-      q: 'How do I fix a Windows error with FixLens?',
-      a: 'Open FixLens, press Start Scanning and point your phone or webcam at the error on your screen, or upload a screenshot. FixLens identifies the error code and affected component, lists likely causes and shows numbered fix steps, including exact PowerShell commands when needed.',
+      q: 'How do I fix a computer error with FixLens?',
+      a: 'Open FixLens, press Start Scanning and point your phone or webcam at the error on your screen, or upload a screenshot. FixLens identifies your operating system, the error and the affected component, lists likely causes and guides you through each fix step, including exact commands when needed. If it cannot read the screen clearly, it asks you to show it more instead of guessing.',
     },
     {
       q: 'Which problems can FixLens diagnose?',
-      a: 'Common Windows problems such as Wi-Fi that cannot connect (0x800704cf), printers not found or Print Spooler errors (0x000006ba), Windows Update failures (0x80070002), app crashes (0xc0000005), installer error 1603, Device Manager Code 43, DNS errors, low disk space and blue screen stop codes.',
+      a: 'Common problems on Windows, macOS and Linux, such as Wi-Fi that cannot connect (e.g. 0x800704cf), printers not found or print spooler errors (0x000006ba), update failures (0x80070002), app crashes (0xc0000005), installer error 1603, Device Manager Code 43, DNS errors, low disk space, blue screens and terminal errors.',
     },
     {
       q: 'Is FixLens free and do I need to install anything?',

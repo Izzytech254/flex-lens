@@ -3,6 +3,7 @@ import { generateContentWithFallback } from '@/lib/gemini';
 import { ReassessmentResult } from '@/types/technician';
 import { rateLimit } from '@/lib/rate-limit';
 import { clip, parseModelJson } from '@/lib/api-utils';
+import { personaForJson } from '@/lib/prompts';
 
 export async function POST(req: NextRequest) {
   const limited = rateLimit(req, 'reassess', 10, 60_000);
@@ -78,8 +79,9 @@ RETURN VALID JSON matching this structure:
 
     const response = await generateContentWithFallback({
       contents: promptText,
-      systemInstruction:
-        'You are FixLens, adapting to failed computer repair attempts with systematic Windows systems diagnosis. Return strictly valid JSON.',
+      systemInstruction: personaForJson(
+        'A previous fix step failed. Do not repeat it. Keep alternatives specific to the same OS, and if the evidence now points to hardware failure or malware with data at risk, recommend a professional.'
+      ),
       responseMimeType: 'application/json',
     });
 

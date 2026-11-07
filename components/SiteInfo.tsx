@@ -10,7 +10,7 @@ export default function SiteInfo() {
       <div className="max-w-4xl mx-auto px-4 sm:px-6 py-12 space-y-12 text-slate-700">
         <section aria-labelledby="how-it-works" className="space-y-4">
           <h2 id="how-it-works" className="text-xl font-extrabold text-slate-900">
-            How FixLens fixes Windows errors
+            How FixLens fixes computer errors
           </h2>
           <ol className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
             <li className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
@@ -30,7 +30,7 @@ export default function SiteInfo() {
 
         <section aria-labelledby="supported-errors" className="space-y-4">
           <h2 id="supported-errors" className="text-xl font-extrabold text-slate-900">
-            Common Windows errors FixLens can diagnose
+            Common errors FixLens can diagnose
           </h2>
           <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
             {siteConfig.supportedErrors.map((e) => (
@@ -43,8 +43,8 @@ export default function SiteInfo() {
             ))}
           </ul>
           <p className="text-sm">
-            FixLens also recognises blue screen (BSOD) stop codes, Device Manager error codes, installer failures and many other
-            Windows 10 and Windows 11 problems shown on screen.
+            FixLens also recognises blue screen (BSOD) stop codes, macOS alerts, Linux terminal errors, installer failures and many
+            other problems shown on screen — and if it can&apos;t read something clearly, it asks you to show it more.
           </p>
         </section>
 

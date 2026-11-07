@@ -24,7 +24,7 @@ export default function AskFixLensModal({ onClose, report }: AskFixLensModalProp
   const [messages, setMessages] = useState<Array<{ sender: 'user' | 'bot'; text: string }>>([
     {
       sender: 'bot',
-      text: 'Ask any question about your computer problem.',
+      text: "Hey, I'm here. What's going on with your computer?",
     },
   ]);
   const [inputText, setInputText] = useState<string>('');
@@ -56,8 +56,10 @@ export default function AskFixLensModal({ onClose, report }: AskFixLensModalProp
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: userMsg,
-          report,
+          report: report ? { ...report, capturedImage: undefined } : null,
           activeStepIndex: 0,
+          // Earlier turns (excluding the greeting) so FixLens can go one step at a time.
+          history: messages.slice(1).slice(-10),
         }),
       });
 

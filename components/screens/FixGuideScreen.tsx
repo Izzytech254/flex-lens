@@ -169,8 +169,16 @@ export default function FixGuideScreen({ report, onBack, onComplete, onStartScan
             <div className="flex items-center justify-between text-[11px] text-slate-400">
               <span className="text-cyan-400 flex items-center gap-1 font-sans font-bold">
                 <Terminal className="w-3.5 h-3.5" />
-                {currentStep.actionType === 'cmd_command' ? 'Command Prompt' : 'PowerShell'}
-                {currentStep.isAdministratorRequired ? ' (Run as administrator)' : ''}
+                {currentStep.actionType === 'cmd_command'
+                  ? 'Command Prompt'
+                  : currentStep.actionType === 'terminal_cmd'
+                  ? 'Terminal'
+                  : 'PowerShell'}
+                {currentStep.isAdministratorRequired
+                  ? currentStep.actionType === 'terminal_cmd'
+                    ? ' (needs sudo / admin)'
+                    : ' (Run as administrator)'
+                  : ''}
               </span>
               <button
                 type="button"
