@@ -295,6 +295,25 @@ class SoundFeedbackEngine {
     return this.pending || this.speakingNow;
   }
 
+  // One queued utterance, spoken as soon as the current one finishes (used so the step-by-step
+  // plan follows FixLens's first quick sentence instead of cutting it off).
+  private queued: { text: string; options?: { onEnd?: () => void } } | null = null;
+
+  /** Speak now if idle; otherwise speak right after the current utterance ends. */
+  public speakNext(text: string, options?: { onEnd?: () => void }): void {
+    if (!this.isBusy()) {
+      this.speak(text, options);
+      return;
+    }
+    this.queued = { text, options };
+  }
+
+  private flushQueue(): void {
+    const q = this.queued;
+    this.queued = null;
+    if (q) setTimeout(() => this.speak(q.text, q.options), 150);
+  }
+
   private mediaUnlocked = false;
 
   /**
@@ -428,12 +447,32 @@ class SoundFeedbackEngine {
     deadline: number,
     options?: { onEnd?: () => void }
   ): Promise<boolean> {
-    // One request per spoken line: TTS quotas are small, so don't split speech into several calls.
-    const segments = [chunks.join(' ... ')];
-    const urls = segments.map((s) => this.fetchTtsUrl(s)); // fetch all in parallel
+    // Speak in short pieces (~200 chars): long requests are slow and can time out, which used to
+    // silently drop the explanation and steps. The next piece is fetched while the current one plays.
+    const segments: string[] = [];
+    let current = '';
+    for (const c of chunks) {
+      // Keep the very first piece short so audio starts as soon as possible.
+      const limit = segments.length === 0 ? 90 : 200;
+      if (current && (current + ' ... ' + c).length > limit) {
+        segments.push(current);
+        current = c;
+      } else {
+        current = current ? `${current} ... ${c}` : c;
+      }
+    }
+    if (current) segments.push(current);
+
+    const urls: Array<Promise<string | null>> = [];
+    const prefetch = (i: number) => {
+      if (i < segments.length && !urls[i]) urls[i] = this.fetchTtsUrl(segments[i]);
+    };
+    prefetch(0);
 
     try {
       for (let i = 0; i < segments.length; i++) {
+        prefetch(i);
+        prefetch(i + 1); // load the next piece while this one plays
         const url = await urls[i];
         if (mySession !== this.session) return true; // superseded — say nothing
         if (!url) {
@@ -443,6 +482,7 @@ class SoundFeedbackEngine {
         if (i === 0 && deadline && Date.now() > deadline) {
           // Too late to be useful (e.g. a live tip about a screen that has moved on) — skip it.
           this.pending = false;
+          this.flushQueue();
           return true;
         }
         await this.playUrl(url, mySession);
@@ -451,6 +491,7 @@ class SoundFeedbackEngine {
       this.pending = false;
       this.notifySpeakingState(false);
       options?.onEnd?.();
+      this.flushQueue();
       return true;
     } catch (err: any) {
       // NotAllowedError = autoplay blocked before any user interaction.
@@ -473,6 +514,7 @@ class SoundFeedbackEngine {
     if (chunks.length === 0) return;
 
     const mySession = ++this.session;
+    this.queued = null; // a new utterance replaces anything that was waiting
     const deadline = options?.expireMs ? Date.now() + options.expireMs : 0;
     this.unlockAudio();
     this.haltPlayback();
@@ -536,6 +578,7 @@ class SoundFeedbackEngine {
             this.activeUtterances = [];
             this.notifySpeakingState(false);
             options?.onEnd?.();
+            this.flushQueue();
           };
         }
         u.onerror = (e: SpeechSynthesisErrorEvent) => {
@@ -564,7 +607,10 @@ class SoundFeedbackEngine {
 
       // If the engine never starts (e.g. no voices on Linux), don't stay "busy" forever.
       setTimeout(() => {
-        if (mySession === this.session && !this.speakingNow) this.pending = false;
+        if (mySession === this.session && !this.speakingNow) {
+          this.pending = false;
+          this.flushQueue();
+        }
       }, 3000);
     };
 
@@ -576,6 +622,7 @@ class SoundFeedbackEngine {
   public stop(): void {
     if (typeof window === 'undefined') return;
     this.session++;
+    this.queued = null;
     this.haltPlayback();
     this.pending = false;
     this.activeUtterances = [];

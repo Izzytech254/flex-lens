@@ -60,7 +60,7 @@ export async function edgeSpeech(rawText: string): Promise<Buffer> {
       const result = await tts.toStream(text);
       const stream = result?.audioStream ?? result;
       if (!stream || typeof stream.on !== 'function') throw new Error('Edge TTS returned no audio stream.');
-      return await collect(stream, 20_000);
+      return await collect(stream, 30_000);
     } catch (err) {
       lastError = err;
       console.warn(`[tts-edge] voice ${voice} failed:`, (err as any)?.message || err);

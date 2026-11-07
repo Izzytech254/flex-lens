@@ -80,7 +80,11 @@ You are watching the user's screen live while they fix a problem with your guida
 FIX IN PROGRESS (from the app, JSON):
 ${JSON.stringify(guide)}
 
-Look at the current screen and decide:
+Look at the current screen and decide. Be strict and conservative:
+- If the original error dialog/message is still showing and nothing related to this step is visible, the step is NOT done.
+- Only use STEP_DONE when you can clearly SEE this step's expected outcome on screen right now.
+- Only use RESOLVED when the original error is clearly gone AND you can see things working normally.
+- When unsure, use IN_PROGRESS or NOT_STARTED. A wrong STEP_DONE skips instructions the user still needs.
 - stepProgress:
   "NOT_STARTED" — nothing on screen shows they've begun this step,
   "IN_PROGRESS" — they're partway (e.g. the right window is open but the action isn't finished),
@@ -101,8 +105,38 @@ RETURN STRICT JSON:
         systemInstruction: personaForJson(),
         responseMimeType: 'application/json',
         preferFast: true,
+        noThinking: true,
       });
       return NextResponse.json({ success: true, progress: parseModelJson(response.text) });
+    }
+
+    // ---- Detect mode: fast first look. Just identify the error so FixLens can start talking
+    // immediately; the full step-by-step plan is requested separately (mode "full"). ----
+    if (body?.mode === 'detect') {
+      const detectPrompt = `
+Look at this camera frame or screenshot of a computer screen. Answer quickly and only from what is visible.
+
+RETURN STRICT JSON:
+{
+  "screenState": "ERROR_ACTIVE" | "NO_ERROR_DETECTED" | "UNCLEAR",
+  "detectedOS": "Windows 11" | "Windows" | "macOS" | "Linux (Ubuntu)" | "Linux" | "unknown",
+  "detectedError": "Short name of the problem, e.g. 'Wi-Fi can't connect (0x800704cf)'",
+  "errorCode": "exact code if visible, else N/A",
+  "affectedComponent": "component or app, or Unknown",
+  "observedSymptomSummary": "one short sentence describing what is on screen",
+  "realtimeSpokenGuidance": "1-2 short spoken beats, natural and calm: say what you see and, in friend terms, what it means (simple cause → effect). If UNCLEAR, ask them to move closer or show the error. No steps.",
+  "confidence": 0.0,
+  "boundingBoxHint": { "label": "Error", "topPercent": 0, "leftPercent": 0, "widthPercent": 0, "heightPercent": 0 }
+}
+`;
+      const response = await generateContentWithFallback({
+        contents: [image, { text: detectPrompt }],
+        systemInstruction: personaForJson(),
+        responseMimeType: 'application/json',
+        preferFast: true,
+        noThinking: true,
+      });
+      return NextResponse.json({ success: true, detection: true, analysis: parseModelJson(response.text) });
     }
 
     const promptText = `
@@ -168,6 +202,7 @@ RETURN STRICT JSON:
       systemInstruction: personaForJson(),
       responseMimeType: 'application/json',
       preferFast: quick,
+      noThinking: true,
     });
 
     const parsed = parseModelJson(response.text);

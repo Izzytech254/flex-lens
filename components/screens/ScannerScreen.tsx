@@ -68,6 +68,10 @@ const MIN_SCAN_GAP_MS = 2500;
 const IDLE_RESCAN_DETECT_MS = 15000;
 const IDLE_RESCAN_GUIDE_MS = 10000;
 const CHANGE_THRESHOLD = 8; // mean per-channel difference on a 32x18 thumbnail
+// Guided-fix pacing: give the user time to hear and do each step before the camera may move on,
+// and require the AI to agree twice in a row (one frame can easily be misjudged).
+const MIN_STEP_DWELL_MS = 12000;
+const CONFIRMATIONS_NEEDED = 2;
 
 const PROBABILITIES = new Set(['HIGH', 'MEDIUM', 'LOW']);
 const ACTION_TYPES = new Set(['gui_action', 'powershell_cmd', 'cmd_command', 'terminal_cmd', 'hardware_check', 'reboot_check']);
@@ -302,6 +306,11 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
   const fixedCandidateRef = useRef(false);
   const liveTipRef = useRef('');
   const convoRef = useRef<Array<{ sender: 'user' | 'bot'; text: string }>>([]);
+  // When the current step started, and how many consecutive camera checks agreed it's done / resolved.
+  const stepStartedAtRef = useRef(0);
+  const stepStartThumbRef = useRef<Uint8ClampedArray | null>(null);
+  const doneVotesRef = useRef(0);
+  const resolvedVotesRef = useRef(0);
 
   const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -312,6 +321,8 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
   const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null);
 
   const [isProcessingFrame, setIsProcessingFrame] = useState<boolean>(false);
+  // True while the full step-by-step plan is being generated after the fast first look.
+  const [planning, setPlanning] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [detectedError, setDetectedError] = useState<string | null>(null);
@@ -359,10 +370,16 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
    * Speak text. interrupt=false is for live tips: skipped if FixLens is already talking, and
    * dropped if it can't start within a few seconds (so it never talks about an old screen).
    */
-  const say = useCallback((text: string, interrupt = true) => {
+  const say = useCallback((text: string, mode: boolean | 'queue' = true) => {
     if (!mountedRef.current || isMutedRef.current || !text) return;
-    if (!interrupt && (speakingRef.current || soundManager.isBusy())) return;
     lastSpokenTextRef.current = text;
+    // 'queue': speak right after whatever FixLens is currently saying (never cut it off).
+    if (mode === 'queue') {
+      soundManager.speakNext(text);
+      return;
+    }
+    const interrupt = mode;
+    if (!interrupt && (speakingRef.current || soundManager.isBusy())) return;
     soundManager.speak(text, interrupt ? undefined : { expireMs: 3500 });
   }, []);
 
@@ -483,32 +500,37 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
   // ---------------------------------------------------------------- guided fix
 
   const goToStep = useCallback(
-    (idx: number, prefix = '') => {
+    (idx: number, prefix = '', queue = false) => {
       const report = reportRef.current;
       if (!report) return;
       bumpEpoch(); // results about the previous step are now irrelevant
+      stepStartedAtRef.current = Date.now();
+      stepStartThumbRef.current = captureThumb(); // what the screen looked like when this step began
+      doneVotesRef.current = 0;
+      resolvedVotesRef.current = 0;
       setGuideIdx(idx);
       setCopied(false);
       liveTipRef.current = '';
       setLiveTip(null);
-      say(`${prefix}${prefix ? ' ' : ''}${stepNarration(report, idx)}`);
+      say(`${prefix}${prefix ? ' ' : ''}${stepNarration(report, idx)}`, queue ? 'queue' : true);
     },
-    [say]
+    [say, captureThumb]
   );
 
+  /** Starts guiding through the report's steps. queue=true waits for FixLens's current sentence to finish. */
   const startGuide = useCallback(
-    (report: DiagnosisReport, intro: string) => {
+    (report: DiagnosisReport, intro: string, queue = false) => {
       reportRef.current = report;
       setFixedCandidate(false);
       convoRef.current = [];
       setExchange(null);
       if (report.troubleshootingSteps.length === 0) {
         setGuideIdx(null);
-        say(intro);
+        say(intro, queue ? 'queue' : true);
         return;
       }
-      soundManager.playSoundEffect('detect');
-      goToStep(0, intro);
+      soundManager.playSoundEffect('step');
+      goToStep(0, intro, queue);
     },
     [goToStep, say]
   );
@@ -614,7 +636,15 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
       const conf = num(p?.confidence, 0.5);
       if (!stale) setBoundingBox(parseBoundingBox(p?.boundingBoxHint));
 
-      if (progress === 'RESOLVED' && conf >= 0.6) {
+      // Too early in this step (the user is probably still listening / starting): don't move on yet.
+      const settled = Date.now() - stepStartedAtRef.current >= MIN_STEP_DWELL_MS;
+
+      // Count consecutive agreeing checks; any other verdict resets the count.
+      resolvedVotesRef.current = progress === 'RESOLVED' && conf >= 0.7 ? resolvedVotesRef.current + 1 : 0;
+      doneVotesRef.current = progress === 'STEP_DONE' && conf >= 0.7 ? doneVotesRef.current + 1 : 0;
+
+      if (progress === 'RESOLVED' && conf >= 0.7) {
+        if (!settled || resolvedVotesRef.current < CONFIRMATIONS_NEEDED) return;
         if (!fixedCandidateRef.current) {
           bumpEpoch();
           setFixedCandidate(true);
@@ -624,6 +654,14 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
         return;
       }
       if (progress === 'STEP_DONE' && conf >= 0.7) {
+        if (!settled || doneVotesRef.current < CONFIRMATIONS_NEEDED) return;
+        // The user must actually have done something: the screen has to look different from when
+        // this step started. A static error screen can never auto-advance.
+        if (!screenChangedSince(stepStartThumbRef.current)) {
+          doneVotesRef.current = 0;
+          return;
+        }
+        doneVotesRef.current = 0;
         const report = reportRef.current;
         const idx = guideIdxRef.current;
         if (report && idx !== null) {
@@ -655,7 +693,7 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
         say(tip, false);
       }
     },
-    [say, goToStep, advance]
+    [say, goToStep, advance, screenChangedSince]
   );
 
   /**
@@ -686,6 +724,7 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
       const controller = new AbortController();
       abortRef.current = controller;
       const isCurrent = () => mountedRef.current && epoch === epochRef.current;
+      let announced = false; // FixLens already said "give me a second…" for this scan
 
       try {
         const step = guiding ? report!.troubleshootingSteps[idx!] : undefined;
@@ -695,7 +734,8 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             frameBase64,
-            mode: opts.explicit ? 'thorough' : 'quick',
+            // Not guiding yet: a fast first look so FixLens can start talking right away.
+            mode: guiding ? 'quick' : 'detect',
             sessionContext: report
               ? { detectedError: report.problemSummary, affectedComponent: report.affectedComponent }
               : {},
@@ -749,23 +789,67 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
             reportIdRef.current = 'fl_' + Date.now().toString(36);
           }
 
-          const newReport = buildReport(a, reportIdRef.current, frameBase64);
-          setDetectedError(newReport.problemSummary);
-          setDetectedCode(newReport.detectedErrorCodes[0] || null);
-          setSpokenGuidance(str(a.realtimeSpokenGuidance) || null);
           setBoundingBox(parseBoundingBox(a.boundingBoxHint));
-          setLatestReport(newReport);
+          if (!isNewProblem && !opts.explicit) return; // already handling this exact problem
+
+          // ---- Stage 1: say what we see immediately ----
+          const firstLook = buildReport(a, reportIdRef.current, frameBase64);
+          setDetectedError(firstLook.problemSummary);
+          setDetectedCode(firstLook.detectedErrorCodes[0] || null);
+          setSpokenGuidance(str(a.realtimeSpokenGuidance) || null);
+          setLatestReport(firstLook);
           setErrorMessage(null);
 
-          if (isNewProblem || opts.explicit) {
-            onAnalyzed(newReport, { autoNavigate: false });
-            // Spoken intro: what's happening in friend terms (from the model), then "let's fix it".
-            const explanation = str(a.realtimeSpokenGuidance);
-            const intro = explanation
-              ? `Ok, here's what's happening. ... ${explanation} ... Let's fix it together.`
-              : `Ok, I can see the problem. ... ${newReport.problemSummary}. ... Let's fix it together.`;
-            startGuide(newReport, intro);
+          const explanation = str(a.realtimeSpokenGuidance);
+          const opening = explanation
+            ? `Ok, here's what's happening. ... ${explanation}`
+            : `Ok, I can see the problem. ... ${firstLook.problemSummary}.`;
+
+          if (!data.detection && firstLook.troubleshootingSteps.length > 0) {
+            // Server already returned the full plan (older response shape): guide straight away.
+            onAnalyzed(firstLook, { autoNavigate: false });
+            startGuide(firstLook, `${opening} ... Let's fix it together.`);
+            return;
           }
+
+          soundManager.playSoundEffect('detect');
+          say(`${opening} ... Give me a second while I work out the fix.`);
+          announced = true;
+
+          // ---- Stage 2: get the full step-by-step plan while that sentence plays ----
+          setPlanning(true);
+          const fullRes = await fetch('/api/realtime-solve', {
+            method: 'POST',
+            signal: controller.signal,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              frameBase64,
+              mode: 'full',
+              sessionContext: { detectedError: firstLook.problemSummary, affectedComponent: firstLook.affectedComponent },
+            }),
+          });
+          const full = await fullRes.json().catch(() => ({}));
+          if (!isCurrent()) return;
+          if (!fullRes.ok || !full.success || !full.analysis) {
+            throw new Error(full.error || "I couldn't work out the fix steps. Tap Scan to try again.");
+          }
+
+          const f = full.analysis;
+          const merged = {
+            ...a,
+            ...f,
+            detectedError: str(f.detectedError) || a.detectedError,
+            errorCode: str(f.errorCode) && !/^n\/a$/i.test(str(f.errorCode)) ? f.errorCode : a.errorCode,
+            detectedOS: str(f.detectedOS) || a.detectedOS,
+          };
+          const newReport = buildReport(merged, reportIdRef.current, frameBase64);
+          setLatestReport(newReport);
+          setDetectedError(newReport.problemSummary);
+          setDetectedCode(newReport.detectedErrorCodes[0] || null);
+          setPlanning(false);
+          onAnalyzed(newReport, { autoNavigate: false });
+          // Starts right after the opening sentence finishes — never cuts it off.
+          startGuide(newReport, "Alright, here's how we fix it.", true);
         } else {
           setBoundingBox(null);
           if (opts.explicit || opts.frame) {
@@ -778,7 +862,11 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
         }
       } catch (err: any) {
         if (err?.name === 'AbortError' || !isCurrent()) return;
-        if (opts.explicit || opts.frame) {
+        if (announced) {
+          // We promised a fix — don't leave the user waiting in silence.
+          setErrorMessage(err?.message || "I couldn't work out the fix steps. Tap Scan to try again.");
+          say("Sorry, I couldn't work out the steps that time. ... Tap scan and I'll try again.", 'queue');
+        } else if (opts.explicit || opts.frame) {
           const unreachable = err instanceof TypeError;
           setErrorMessage(
             unreachable
@@ -789,7 +877,10 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
       } finally {
         if (abortRef.current === controller) abortRef.current = null;
         isProcessingFrameRef.current = false;
-        if (mountedRef.current) setIsProcessingFrame(false);
+        if (mountedRef.current) {
+          setIsProcessingFrame(false);
+          setPlanning(false);
+        }
       }
     },
     [activeFrameImage, grabVideoFrame, captureThumb, screenChangedSince, handleProgress, onAnalyzed, startGuide, say]
@@ -798,10 +889,13 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
   // Live camera loop: scan when the screen changes (or after an idle timeout).
   useEffect(() => {
     if (!cameraActive || activeFrameImage) return;
-    const first = setTimeout(() => processRealFrame(), 1200);
+    const first = setTimeout(() => processRealFrame(), 600);
     const interval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       if (isProcessingFrameRef.current || fixedCandidateRef.current) return;
+      // While guiding, never check the screen while FixLens is talking (or loading its voice):
+      // a result arriving mid-sentence would cut the instruction off.
+      if (guideIdxRef.current !== null && (speakingRef.current || soundManager.isBusy())) return;
       const since = Date.now() - lastScanAtRef.current;
       if (since < MIN_SCAN_GAP_MS) return;
       const idle = guideIdxRef.current !== null ? IDLE_RESCAN_GUIDE_MS : IDLE_RESCAN_DETECT_MS;
@@ -1407,16 +1501,23 @@ export default function ScannerScreen({ onClose, onAnalyzed, onResolved, initial
                   {spokenGuidance}
                 </p>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  stopPersistentCamera();
-                  onAnalyzed(latestReport, { autoNavigate: true });
-                }}
-                className="w-full py-3 bg-ink hover:bg-ink-2 text-white rounded-lg text-xs font-semibold"
-              >
-                See full diagnosis
-              </button>
+              {planning ? (
+                <p className="flex items-center gap-2 text-sm text-ink-soft" role="status">
+                  <Loader2 className="w-4 h-4 animate-spin text-accent-600" />
+                  Working out the step-by-step fix…
+                </p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopPersistentCamera();
+                    onAnalyzed(latestReport, { autoNavigate: true });
+                  }}
+                  className="w-full py-3 bg-ink hover:bg-ink-2 text-white rounded-lg text-xs font-semibold"
+                >
+                  See full diagnosis
+                </button>
+              )}
             </div>
           ) : (
             <div className="py-8 text-center text-ink-soft space-y-3">

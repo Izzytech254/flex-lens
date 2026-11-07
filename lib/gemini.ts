@@ -96,15 +96,24 @@ async function tryModels(useVertex: boolean, params: GenerateParams) {
   let lastError: any = null;
 
   for (const model of getModels(params.preferFast)) {
+    const config: Record<string, any> = {
+      systemInstruction: params.systemInstruction,
+      responseMimeType: params.responseMimeType,
+    };
+    // "Thinking" adds seconds of delay; live camera checks don't need it.
+    if (params.noThinking) config.thinkingConfig = { thinkingBudget: 0 };
+
     try {
-      return await ai.models.generateContent({
-        model,
-        contents: params.contents,
-        config: {
-          systemInstruction: params.systemInstruction,
-          responseMimeType: params.responseMimeType,
-        },
-      });
+      try {
+        return await ai.models.generateContent({ model, contents: params.contents, config });
+      } catch (err: any) {
+        // Some models don't allow turning thinking off — retry the same model without that setting.
+        if (config.thinkingConfig && /thinking|budget/i.test(errorText(err))) {
+          delete config.thinkingConfig;
+          return await ai.models.generateContent({ model, contents: params.contents, config });
+        }
+        throw err;
+      }
     } catch (err: any) {
       console.warn(`[gemini] ${useVertex ? 'vertex' : 'studio'} model ${model} failed:`, errorText(err));
       lastError = err;
@@ -124,6 +133,8 @@ type GenerateParams = {
   responseMimeType?: string;
   /** Try faster "lite" models first (used for frequent live camera checks). */
   preferFast?: boolean;
+  /** Disable model "thinking" for lower latency (falls back automatically if unsupported). */
+  noThinking?: boolean;
 };
 
 // ---- Text-to-speech -------------------------------------------------------
